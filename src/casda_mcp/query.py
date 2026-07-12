@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from casda_mcp.errors import ValidationError
@@ -85,13 +85,13 @@ def parse_datetime(value: str, *, field: str) -> datetime:
     except ValueError as exc:
         raise ValidationError(f"{field} must be an ISO 8601 date or timestamp.") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def datetime_to_mjd(value: datetime) -> float:
-    mjd_epoch = datetime(1858, 11, 17, tzinfo=UTC)
-    return (value.astimezone(UTC) - mjd_epoch).total_seconds() / 86400
+    mjd_epoch = datetime(1858, 11, 17, tzinfo=timezone.utc)
+    return (value.astimezone(timezone.utc) - mjd_epoch).total_seconds() / 86400
 
 
 @dataclass(slots=True)

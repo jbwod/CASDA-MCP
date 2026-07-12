@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -82,7 +82,7 @@ async def test_manifest_omits_signed_url_even_when_requested(
             product_id="cube-1",
             request_id="job-1",
             download_url="https://data.csiro.au/file.fits?signature=secret",
-            confirmed_at=datetime.now(UTC),
+            confirmed_at=datetime.now(timezone.utc),
         )
     )
     response = await manifest_service.create_manifest(
@@ -105,7 +105,7 @@ async def test_manifest_includes_queryless_confirmed_url_when_requested(
             product_id="cube-1",
             request_id="job-1",
             download_url="https://data.csiro.au/file.fits",
-            confirmed_at=datetime.now(UTC),
+            confirmed_at=datetime.now(timezone.utc),
         )
     )
     response = await manifest_service.create_manifest(

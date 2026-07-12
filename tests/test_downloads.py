@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -68,8 +68,8 @@ def artifact(checksum: bool = True) -> ReadyArtifact:
             if checksum
             else None
         ),
-        confirmed_at=datetime.now(UTC),
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        confirmed_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
 
 

@@ -12,7 +12,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """CASDA MCP configuration with conservative defaults."""
 
-    model_config = SettingsConfigDict(env_prefix="CASDA_", extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_prefix="CASDA_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
     base_url: str = "https://casda.csiro.au"
     tap_url: str = "https://casda.csiro.au/casda_vo_tools/tap/sync"

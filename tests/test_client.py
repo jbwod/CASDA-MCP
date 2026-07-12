@@ -74,6 +74,19 @@ def test_client_rejects_caller_controlled_host_before_network(client: CasdaClien
     assert error.value.code == "UNSAFE_ARCHIVE_URL"
 
 
+async def test_client_rejects_unexpected_datalink_path_before_network(
+    client: CasdaClient,
+) -> None:
+    try:
+        with pytest.raises(CasdaError) as error:
+            await client.resolve_datalink(
+                "https://data.csiro.au/unexpected?ID=cube-1", correlation_id="test"
+            )
+        assert error.value.code == "UNSAFE_ARCHIVE_URL"
+    finally:
+        await client.aclose()
+
+
 @respx.mock
 async def test_non_idempotent_stage_creation_redirect_is_followed_without_reposting(
     client: CasdaClient,

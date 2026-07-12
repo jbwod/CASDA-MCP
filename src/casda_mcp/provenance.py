@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -18,7 +18,7 @@ REDACTED = "[REDACTED]"
 
 
 def utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def sanitize_url(url: str) -> str:

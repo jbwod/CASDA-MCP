@@ -6,7 +6,7 @@ import csv
 import io
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -69,14 +69,14 @@ def _datetime(value: str | None) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _mjd_datetime(value: float | None) -> datetime | None:
     if value is None:
         return None
-    return datetime(1858, 11, 17, tzinfo=UTC) + timedelta(days=value)
+    return datetime(1858, 11, 17, tzinfo=timezone.utc) + timedelta(days=value)
 
 
 def product_from_row(row: dict[str, str | None], *, ready: bool = False) -> Product:
@@ -90,7 +90,7 @@ def product_from_row(row: dict[str, str | None], *, ready: bool = False) -> Prod
     em_max = _float(row, "em_max")
     speed_of_light = 299_792_458.0
     release_date = _datetime(row.get("obs_release_date"))
-    if release_date is not None and release_date > datetime.now(UTC):
+    if release_date is not None and release_date > datetime.now(timezone.utc):
         access_state = "RESTRICTED"
     elif ready:
         access_state = "READY"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -47,7 +47,7 @@ def test_future_release_is_restricted() -> None:
             "access_url": "https://data.csiro.au/datalink?id=cube-2",
         }
     )
-    assert product.release_date == datetime(2999, 1, 1, tzinfo=UTC)
+    assert product.release_date == datetime(2999, 1, 1, tzinfo=timezone.utc)
     assert product.access_state == "RESTRICTED"
 
 
@@ -72,7 +72,7 @@ def test_uws_status_parses_phase_expiry_error_and_results() -> None:
     </uws:job>"""
     result = parse_uws_status(content)
     assert result.phase == "COMPLETED"
-    assert result.destruction == datetime(2026, 7, 13, tzinfo=UTC)
+    assert result.destruction == datetime(2026, 7, 13, tzinfo=timezone.utc)
     assert result.result_urls == ["https://data.csiro.au/file.fits"]
 
 

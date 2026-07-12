@@ -104,11 +104,23 @@ class CasdaClient:
 
     async def resolve_datalink(self, access_url: str, *, correlation_id: str) -> DatalinkAccess:
         self.validate_archive_url(access_url)
+        if sanitize_url(access_url).rstrip("/") != self.settings.datalink_url.rstrip("/"):
+            raise CasdaError(
+                "UNSAFE_ARCHIVE_URL",
+                "CASDA returned an unexpected Datalink endpoint.",
+                details={"url": sanitize_url(access_url)},
+            )
         response = await self.request(
             "GET", access_url, safe_to_retry=True, correlation_id=correlation_id
         )
         result = parse_datalink_access(response.content)
         self.validate_archive_url(result.service_url)
+        if result.service_url.rstrip("/") != self.settings.soda_url.rstrip("/"):
+            raise CasdaError(
+                "UNSAFE_ARCHIVE_URL",
+                "CASDA returned an unexpected asynchronous staging endpoint.",
+                details={"url": sanitize_url(result.service_url)},
+            )
         return result
 
     async def create_staging_job(
