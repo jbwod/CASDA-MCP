@@ -144,7 +144,8 @@ configuration fails fast.
 | `CASDA_CACHE_MAX_ENTRIES` | `256` | Process-local cache bound; zero disables caching. |
 | `CASDA_STATE_DB` | unset | Optional SQLite state file. Default state is process-local memory. |
 
-Copy `.env.example` for placeholders, but do not commit a populated `.env` file.
+Copy `.env.example` to `.env` for local development; it is loaded automatically and ignored by Git.
+Do not commit a populated `.env` file. Production deployments should inject secrets instead.
 
 ### Enabling staging
 
@@ -451,6 +452,8 @@ secrets only when explicitly enabling downloads or staging.
   removes the temporary file, so resumption does not persist across separate calls.
 - Source-name resolution and row-level catalogue science queries are outside this server. No generic
   unrestricted ADQL tool is exposed.
+- Beam identifiers may be retained in filenames or target metadata, but CASDA ObsCore does not expose
+  a generic structured neighbouring-beam relationship used by this implementation.
 
 ## References
 
@@ -458,4 +461,3 @@ secrets only when explicitly enabling downloads or staging.
 - [Astroquery CASDA module](https://astroquery.readthedocs.io/en/latest/casda/casda.html)
 - [CASDA VO Tools](https://github.com/csiro-rds/casda_vo_tools)
 - [Model Context Protocol server guide](https://modelcontextprotocol.io/docs/develop/build-server)
-
