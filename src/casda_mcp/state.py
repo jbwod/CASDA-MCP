@@ -52,6 +52,17 @@ class StateStore:
             ).fetchone()
             return json.loads(row[0]) if row else None
 
+    def _all(self, kind: str) -> list[dict[str, Any]]:
+        with self._lock:
+            if self._connection is None:
+                return [
+                    value for (item_kind, _), value in self._memory.items() if item_kind == kind
+                ]
+            rows = self._connection.execute(
+                "SELECT value_json FROM state WHERE kind=?", (kind,)
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+
     def put_staging(self, request: StagingRequest) -> None:
         value = request.model_dump(mode="json", exclude_none=False)
         self._put("staging", request.request_id, value)
@@ -64,6 +75,17 @@ class StateStore:
     def get_staging_by_idempotency(self, key: str) -> StagingRequest | None:
         pointer = self._get("idempotency", key)
         return self.get_staging(pointer["request_id"]) if pointer else None
+
+    def find_active_staging(self, product_ids: list[str]) -> StagingRequest | None:
+        requested = set(product_ids)
+        for value in self._all("staging"):
+            staging = StagingRequest.model_validate(value)
+            if (
+                staging.status in {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "UNKNOWN"}
+                and set(staging.product_ids) == requested
+            ):
+                return staging
+        return None
 
     def put_ready(self, artifact: ReadyArtifact) -> None:
         self._put(

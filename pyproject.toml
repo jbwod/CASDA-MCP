@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "CASDA MCP contributors"}]
 dependencies = [
+  "aiofiles>=24.1,<26",
   "astropy>=6.1,<9",
   "defusedxml>=0.7.1,<1",
   "httpx>=0.28,<1",
@@ -28,6 +29,7 @@ dev = [
   "respx>=0.22,<1",
   "ruff>=0.12,<1",
   "types-defusedxml>=0.7.0.20250516",
+  "types-aiofiles>=24.1",
 ]
 
 [project.scripts]

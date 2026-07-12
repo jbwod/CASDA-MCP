@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -51,7 +51,7 @@ class CasdaClient:
             auth=auth,
             timeout=httpx.Timeout(settings.request_timeout_seconds),
             limits=limits,
-            follow_redirects=True,
+            follow_redirects=False,
         )
 
     async def aclose(self) -> None:
@@ -162,7 +162,7 @@ class CasdaClient:
         for attempt in range(attempts):
             started = time.monotonic()
             try:
-                response = await self.http.request(method, url, **kwargs)
+                response = await self._request_following_safe_redirects(method, url, **kwargs)
                 latency_ms = round((time.monotonic() - started) * 1000, 2)
                 LOGGER.info(
                     "archive_request",
@@ -206,6 +206,28 @@ class CasdaClient:
             details={"endpoint": sanitize_url(url)},
         ) from last_error
 
+    async def _request_following_safe_redirects(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        current_method = method
+        current_url = url
+        current_kwargs = dict(kwargs)
+        for _ in range(6):
+            response = await self.http.request(current_method, current_url, **current_kwargs)
+            if not response.is_redirect:
+                return response
+            location = response.headers.get("Location")
+            if not location:
+                return response
+            next_url = urljoin(current_url, location)
+            self.validate_archive_url(next_url)
+            if response.status_code in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
+                current_method = "GET"
+                current_kwargs.pop("data", None)
+                current_kwargs.pop("params", None)
+            current_url = next_url
+        raise CasdaError("ARCHIVE_REDIRECT_ERROR", "CASDA returned too many redirects.")
+
     @asynccontextmanager
     async def stream_download(
         self,
@@ -218,7 +240,24 @@ class CasdaClient:
         headers = {"Range": f"bytes={offset}-"} if offset else None
         timeout = httpx.Timeout(self.settings.download_timeout_seconds)
         started = time.monotonic()
-        async with self.http.stream("GET", url, headers=headers, timeout=timeout) as response:
+        response: httpx.Response | None = None
+        current_url = url
+        for _ in range(6):
+            request = self.http.build_request("GET", current_url, headers=headers, timeout=timeout)
+            response = await self.http.send(request, stream=True, follow_redirects=False)
+            if not response.is_redirect:
+                break
+            location = response.headers.get("Location")
+            await response.aclose()
+            if not location:
+                break
+            current_url = urljoin(current_url, location)
+            self.validate_archive_url(current_url)
+        if response is None or response.is_redirect:
+            if response is not None:
+                await response.aclose()
+            raise CasdaError("ARCHIVE_REDIRECT_ERROR", "CASDA returned too many redirects.")
+        try:
             LOGGER.info(
                 "archive_download_response",
                 extra={
@@ -234,6 +273,8 @@ class CasdaClient:
             if response.status_code >= 400:
                 raise map_http_error(response.status_code, "CASDA download failed.")
             yield response
+        finally:
+            await response.aclose()
 
     @staticmethod
     def _retry_delay(response: httpx.Response, attempt: int) -> float:

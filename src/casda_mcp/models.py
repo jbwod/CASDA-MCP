@@ -122,6 +122,7 @@ class StagingRequest(BaseModel):
     submitted_at: datetime
     status: StagingState
     product_ids: list[str]
+    filenames: dict[str, str | None] = Field(default_factory=dict, repr=False)
     products: list[StagingItem]
     expiry_time: datetime | None = None
     failure_reason: str | None = None
@@ -152,6 +153,7 @@ class DownloadResult(BaseModel):
     content_length_verified: bool
     checksum: ChecksumResult
     resumed: bool = False
+    staging_request_id: str | None = None
 
 
 class ManifestProduct(BaseModel):

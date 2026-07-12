@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 import pytest
 
 from casda_mcp.errors import CasdaError
-from casda_mcp.parsers import parse_tap_csv, parse_uws_status, product_from_row
+from casda_mcp.parsers import (
+    parse_datalink_access,
+    parse_tap_csv,
+    parse_uws_status,
+    product_from_row,
+)
 
 
 def test_csv_preserves_nulls_and_unexpected_columns() -> None:
@@ -74,3 +79,34 @@ def test_uws_status_parses_phase_expiry_error_and_results() -> None:
 def test_uws_missing_phase_is_unknown() -> None:
     result = parse_uws_status(b"<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'/>")
     assert result.phase == "UNKNOWN"
+
+
+def test_datalink_votable_extracts_authorised_async_service() -> None:
+    content = b"""<?xml version='1.0'?>
+    <VOTABLE xmlns='http://www.ivoa.net/xml/VOTable/v1.3' version='1.3'>
+      <RESOURCE type='results'><TABLE>
+        <FIELD datatype='char' arraysize='*' name='service_def'/>
+        <FIELD datatype='char' arraysize='*' name='authenticated_id_token'/>
+        <DATA><TABLEDATA><TR><TD>async_service</TD><TD>cube-1-token</TD></TR></TABLEDATA></DATA>
+      </TABLE></RESOURCE>
+      <RESOURCE ID='async_service' type='meta'>
+        <PARAM datatype='char' arraysize='*' name='accessURL'
+          value='https://casda.csiro.au/casda_data_access/data/async'/>
+      </RESOURCE>
+    </VOTABLE>"""
+    result = parse_datalink_access(content)
+    assert result.authenticated_id_token == "cube-1-token"  # noqa: S105
+    assert result.service_url.endswith("/data/async")
+
+
+def test_datalink_without_authorised_token_is_rejected() -> None:
+    content = b"""<VOTABLE xmlns='http://www.ivoa.net/xml/VOTable/v1.3' version='1.3'>
+      <RESOURCE type='results'><TABLE>
+        <FIELD datatype='char' arraysize='*' name='service_def'/>
+        <FIELD datatype='char' arraysize='*' name='authenticated_id_token'/>
+        <DATA><TABLEDATA></TABLEDATA></DATA>
+      </TABLE></RESOURCE>
+    </VOTABLE>"""
+    with pytest.raises(CasdaError) as error:
+        parse_datalink_access(content)
+    assert error.value.code == "AUTHORISATION_FAILED"

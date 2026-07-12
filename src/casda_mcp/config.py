@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     max_cone_radius_deg: float = Field(default=5.0, gt=0, le=90)
     max_stage_products: int = Field(default=20, ge=1, le=500)
     max_stage_bytes: int = Field(default=100 * 1024**3, ge=1)
+    max_manifest_products: int = Field(default=100, ge=1, le=1000)
     max_download_bytes: int = Field(default=50 * 1024**3, ge=1)
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     download_timeout_seconds: float = Field(default=300.0, gt=0, le=86400)
