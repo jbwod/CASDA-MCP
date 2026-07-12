@@ -41,9 +41,7 @@ class CasdaClient:
             "Accept": "application/json, text/csv, application/xml",
         }
         auth: httpx.BasicAuth | None = None
-        if settings.token is not None:
-            headers["Authorization"] = f"Bearer {settings.token.get_secret_value()}"
-        elif settings.username is not None and settings.password is not None:
+        if settings.username is not None and settings.password is not None:
             auth = httpx.BasicAuth(settings.username, settings.password.get_secret_value())
         limits = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30)
         self.http = httpx.AsyncClient(

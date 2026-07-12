@@ -22,7 +22,6 @@ class Settings(BaseSettings):
 
     username: str | None = None
     password: SecretStr | None = None
-    token: SecretStr | None = None
 
     enable_staging: bool = False
     enable_downloads: bool = False
@@ -70,14 +69,14 @@ class Settings(BaseSettings):
             if not self.download_dir.is_absolute():
                 raise ValueError("CASDA_DOWNLOAD_DIR must be an absolute path")
         if self.enable_staging and not self.has_credentials:
-            raise ValueError("staging requires CASDA_TOKEN or CASDA_USERNAME and CASDA_PASSWORD")
+            raise ValueError("staging requires CASDA_USERNAME and CASDA_PASSWORD")
         if (self.username is None) != (self.password is None):
             raise ValueError("CASDA_USERNAME and CASDA_PASSWORD must be configured together")
         return self
 
     @property
     def has_credentials(self) -> bool:
-        return self.token is not None or (self.username is not None and self.password is not None)
+        return self.username is not None and self.password is not None
 
     @property
     def allowed_hosts(self) -> frozenset[str]:

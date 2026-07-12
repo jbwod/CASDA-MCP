@@ -70,7 +70,8 @@ class StagingClient:
 def staging_service(tmp_path) -> CasdaService:
     settings = Settings(
         _env_file=None,
-        token="test-token",  # noqa: S106
+        username="researcher@example.test",
+        password="test-password",  # noqa: S106
         enable_staging=True,
         max_stage_products=2,
         max_stage_bytes=10_000,

@@ -33,5 +33,9 @@ def test_archive_endpoints_must_be_safe_https(url: str) -> None:
 
 
 def test_secret_values_are_masked() -> None:
-    settings = Settings(_env_file=None, token="top-secret")  # noqa: S106
+    settings = Settings(
+        _env_file=None,
+        username="researcher@example.test",
+        password="top-secret",  # noqa: S106
+    )
     assert "top-secret" not in repr(settings)
