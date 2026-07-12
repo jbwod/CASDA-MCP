@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "casda-mcp"
+version = "0.1.0"
+description = "A safe Model Context Protocol server for the CSIRO ASKAP Science Data Archive"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "CASDA MCP contributors"}]
+dependencies = [
+  "astropy>=6.1,<9",
+  "defusedxml>=0.7.1,<1",
+  "httpx>=0.28,<1",
+  "mcp[cli]>=1.27,<2",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.17,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<8",
+  "respx>=0.22,<1",
+  "ruff>=0.12,<1",
+  "types-defusedxml>=0.7.0.20250516",
+]
+
+[project.scripts]
+casda-mcp = "casda_mcp.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/casda_mcp"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "live: optional read-only tests against live CASDA services",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["casda_mcp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "N", "S", "SIM", "UP"]
+ignore = [
+  "S101", # pytest assertions
+  "S608", # ADQL is assembled only from validated values and allowlisted identifiers
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["casda_mcp"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["astropy.*"]
+ignore_missing_imports = true
