@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -181,7 +181,7 @@ async def test_completed_status_records_only_confirmed_product_urls(
     )
     staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
         phase="COMPLETED",
-        destruction=datetime(2026, 7, 13, tzinfo=timezone.utc),
+        destruction=datetime.now(timezone.utc) + timedelta(hours=1),
         result_urls=[
             "https://data.csiro.au/download/cube-1.fits.checksum?signature=secret",
             "https://data.csiro.au/download/cube-1.fits?signature=secret",

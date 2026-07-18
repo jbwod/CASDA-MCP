@@ -7,7 +7,7 @@
 | `server.py` | Stable MCP tool/resource names, descriptions, input/output schemas, transport app, health. |
 | `service.py` | Workflow orchestration, limits, idempotency, per-product state, provenance, manifests. |
 | `query.py` | Validation and allowlisted TAP/ADQL construction; no generic query entry point. |
-| `client.py` | Pooled async HTTP, OPAL Basic auth, retry boundaries, redirects, host/rate-limit handling. |
+| `client.py` | Pooled async HTTP, bounded decoded reads, OPAL auth, redirects, retry/host handling. |
 | `parsers.py` | CSV, Astropy VOTable, and defused UWS XML parsing into deterministic typed values. |
 | `downloads.py` | Destination containment, checksum parsing, streaming, Range retry, atomic completion. |
 | `state.py` | In-memory or opt-in SQLite idempotency, staging, ready URL, search, and manifest state. |
@@ -67,7 +67,7 @@ sequenceDiagram
 3. Re-read product metadata and enforce estimated and archive-reported byte limits.
 4. Resolve the caller path under the configured absolute directory; reject traversal and existing
    files unless replacement was administratively enabled.
-5. Fetch and parse the checksum sidecar when available and requested.
+5. Fetch and parse at most 64 KiB from the checksum sidecar when available and requested.
 6. Stream to a unique temporary file. A transient read may retry with `Range` from the confirmed
    temporary size; an ignored Range response restarts the same call safely.
 7. Verify response Content-Length, final size, and checksum.

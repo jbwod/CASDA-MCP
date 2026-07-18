@@ -80,3 +80,20 @@ def test_expired_ready_artifacts_are_pruned() -> None:
         )
     )
     assert store.get_ready("cube-1") is None
+
+
+def test_expired_staging_request_is_not_reused() -> None:
+    store = StateStore()
+    store.put_staging(
+        StagingRequest(
+            request_id="job-expired",
+            idempotency_key="run-expired",
+            job_url="https://casda.csiro.au/casda_data_access/data/async/job-expired",
+            submitted_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            status="QUEUED",
+            product_ids=["cube-1"],
+            products=[StagingItem(product_id="cube-1", status="QUEUED")],
+            expiry_time=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+    )
+    assert store.find_active_staging(["cube-1"]) is None

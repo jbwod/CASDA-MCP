@@ -12,6 +12,13 @@ def test_defaults_are_read_only() -> None:
     assert settings.enable_downloads is False
     assert settings.has_credentials is False
     assert settings.tap_url.startswith("https://")
+    assert settings.max_response_bytes == 16 * 1024**2
+
+
+@pytest.mark.parametrize("value", [1023, 100 * 1024**2 + 1])
+def test_response_byte_limit_is_bounded(value: int) -> None:
+    with pytest.raises(PydanticValidationError, match="max_response_bytes"):
+        Settings(_env_file=None, max_response_bytes=value)
 
 
 def test_downloads_require_absolute_directory() -> None:

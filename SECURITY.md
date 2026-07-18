@@ -25,7 +25,7 @@ checksums, and HTTP headers are treated as untrusted. Principal controls include
 - no caller-selected endpoint, arbitrary URL, ADQL, shell command, or unrestricted filesystem tool;
 - fixed query templates and allowlisted clauses;
 - HTTPS and archive-host validation on initial requests and every redirect;
-- strict result, cone, staging, manifest, and byte limits;
+- strict result, cone, staging, manifest, decoded metadata-response, checksum, and download limits;
 - staging/download feature gates disabled by default;
 - download containment, no overwrite by default, temporary-file cleanup, length/checksum validation;
 - OPAL secret redaction and stderr-only structured logging;

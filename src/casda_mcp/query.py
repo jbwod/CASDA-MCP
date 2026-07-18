@@ -253,6 +253,8 @@ class QueryBuilder:
         if criteria.scheduling_block_id is not None and criteria.scheduling_block_id <= 0:
             raise ValidationError("scheduling_block_id must be a positive integer.")
         if criteria.product_types:
+            if len(criteria.product_types) > len(PRODUCT_TYPE_CLAUSES):
+                raise ValidationError("Too many product types were supplied.")
             criteria.product_types = list(dict.fromkeys(criteria.product_types))
             invalid = sorted(set(criteria.product_types) - PRODUCT_TYPE_CLAUSES.keys())
             if invalid:

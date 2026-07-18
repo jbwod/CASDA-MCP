@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from casda_mcp.errors import CasdaError
+from casda_mcp.models import ReadyArtifact
 from casda_mcp.query import SearchCriteria
 from casda_mcp.service import CasdaService
 
@@ -86,6 +89,21 @@ async def test_get_product_not_found_is_typed(service: CasdaService) -> None:
     with pytest.raises(CasdaError) as error:
         await service.get_product("missing")
     assert error.value.code == "PRODUCT_NOT_FOUND"
+
+
+async def test_expired_ready_artifact_is_not_reported_as_ready(service: CasdaService) -> None:
+    service.state.put_ready(
+        ReadyArtifact(
+            product_id="cube-1170",
+            request_id="job-1",
+            download_url="https://data.csiro.au/file.fits",
+            confirmed_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+    )
+    response = await service.get_product("cube-1170")
+    assert response.product is not None
+    assert response.product.access_state == "STAGING_REQUIRED"
 
 
 async def test_get_observation_resolves_projects_and_products(service: CasdaService) -> None:

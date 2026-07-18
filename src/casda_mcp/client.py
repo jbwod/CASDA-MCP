@@ -191,9 +191,7 @@ class CasdaClient:
     ) -> httpx.Response:
         self.validate_archive_url(url)
         response_limit = (
-            self.settings.max_response_bytes
-            if max_response_bytes is None
-            else max_response_bytes
+            self.settings.max_response_bytes if max_response_bytes is None else max_response_bytes
         )
         if response_limit < 1:
             raise ValueError("max_response_bytes must be positive")
@@ -349,7 +347,7 @@ class CasdaClient:
             await response.aclose()
 
         # This is the same decoded-content cache populated by httpx.Response.aread().
-        response._content = bytes(body)  # type: ignore[attr-defined]
+        response._content = bytes(body)
         return response
 
     @asynccontextmanager

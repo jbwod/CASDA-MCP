@@ -137,6 +137,7 @@ configuration fails fast.
 | `CASDA_ALLOW_UNKNOWN_STAGE_SIZE` | `false` | If false, products without estimated sizes cannot be staged. |
 | `CASDA_MAX_MANIFEST_PRODUCTS` | `100` | Maximum deduplicated products in one manifest. |
 | `CASDA_MAX_DOWNLOAD_BYTES` | `53687091200` | Maximum archive-reported and streamed bytes for one download. |
+| `CASDA_MAX_RESPONSE_BYTES` | `16777216` | Maximum decoded bytes buffered from one metadata or control response (validated from 1 KiB to 100 MiB). |
 | `CASDA_REQUEST_TIMEOUT_SECONDS` | `30` | Metadata and control-request timeout. |
 | `CASDA_DOWNLOAD_TIMEOUT_SECONDS` | `300` | Timeout used for a download response. |
 | `CASDA_MAX_RETRIES` | `3` | Retries for safe reads only, with exponential backoff, jitter, and `Retry-After`. |
@@ -351,7 +352,7 @@ selection rule has not been established. WALLABY-specific rules should remain a 
 - TAP table names, selected columns, product-type clauses, sort fields, and operators are hard-coded
   allowlists.
 - Text wildcards and control characters are rejected; identifiers use restrictive patterns.
-- Cone, result, page, staging, manifest, and download sizes are bounded.
+- Cone, result, page, staging, manifest, decoded archive response, and download sizes are bounded.
 - Only configured HTTPS CASDA hosts and current CASDA-controlled Pawsey download hosts are allowed.
   Redirect destinations are revalidated before they are followed.
 - Safe metadata reads may retry; staging creation/start never automatically retry.

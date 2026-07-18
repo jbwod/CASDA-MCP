@@ -209,6 +209,12 @@ class CasdaService:
             raise CasdaError(
                 "STAGING_DISABLED", "Archive-side staging is disabled by server configuration."
             )
+        if len(product_ids) > 500:
+            raise CasdaError(
+                "STAGING_LIMIT_EXCEEDED",
+                "The request exceeds the hard input limit of 500 product identifiers.",
+                details={"requested": len(product_ids), "maximum": 500},
+            )
         normalized = normalize_product_ids(product_ids)
         if len(normalized) > self.settings.max_stage_products:
             raise CasdaError(
@@ -433,6 +439,12 @@ class CasdaService:
     ) -> CreateManifestResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
+        if len(product_ids) > 1000:
+            raise CasdaError(
+                "MANIFEST_LIMIT_EXCEEDED",
+                "The request exceeds the hard input limit of 1000 product identifiers.",
+                details={"requested": len(product_ids), "maximum": 1000},
+            )
         normalized = normalize_product_ids(product_ids)
         if len(normalized) > self.settings.max_manifest_products:
             raise CasdaError(

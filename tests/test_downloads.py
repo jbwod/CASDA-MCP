@@ -9,7 +9,7 @@ import respx
 
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
-from casda_mcp.downloads import Downloader, parse_checksum, resolve_destination
+from casda_mcp.downloads import CHECKSUM_MAX_BYTES, Downloader, parse_checksum, resolve_destination
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import Product, ReadyArtifact
 from casda_mcp.observability import Metrics
@@ -79,6 +79,21 @@ class FailingStream(httpx.AsyncByteStream):
         raise httpx.ReadError("connection interrupted")
 
 
+class CountingStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.chunks_read = 0
+        self.closed = False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.chunks_read += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
 @respx.mock
 async def test_streamed_download_verifies_length_and_checksum(tmp_path) -> None:
     data = b"abcdef"
@@ -121,6 +136,24 @@ async def test_checksum_mismatch_removes_incomplete_file(tmp_path) -> None:
         await client.aclose()
     assert not (tmp_path / "cube-1.fits").exists()
     assert not list(tmp_path.glob(".*.part"))
+
+
+@respx.mock
+async def test_checksum_response_is_stopped_at_64_kib_before_buffering(tmp_path) -> None:
+    stream = CountingStream([b"a" * CHECKSUM_MAX_BYTES, b"b", b"not-read"])
+    route = respx.get(url__regex=r".*\.checksum.*").mock(
+        return_value=httpx.Response(200, stream=stream)
+    )
+    downloader, client = make_downloader(tmp_path)
+    try:
+        with pytest.raises(CasdaError) as error:
+            await downloader.checksum_spec(artifact(), verify_checksum=True, correlation_id="test")
+        assert error.value.code == "CHECKSUM_UNAVAILABLE"
+    finally:
+        await client.aclose()
+    assert stream.chunks_read == 2
+    assert stream.closed is True
+    assert route.calls[0].request.headers["Accept"] == "text/plain"
 
 
 @respx.mock
