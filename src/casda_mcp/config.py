@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     max_stage_bytes: int = Field(default=100 * 1024**3, ge=1)
     max_manifest_products: int = Field(default=100, ge=1, le=1000)
     max_download_bytes: int = Field(default=50 * 1024**3, ge=1)
+    max_response_bytes: int = Field(default=16 * 1024**2, ge=1024, le=100 * 1024**2)
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     download_timeout_seconds: float = Field(default=300.0, gt=0, le=86400)
     max_retries: int = Field(default=3, ge=0, le=10)

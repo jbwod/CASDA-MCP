@@ -28,6 +28,10 @@ from casda_mcp.provenance import sanitize_url
 
 LOGGER = logging.getLogger(__name__)
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+TAP_ACCEPT = "text/csv"
+DATALINK_ACCEPT = "application/x-votable+xml"
+UWS_ACCEPT = "application/xml"
+BINARY_ACCEPT = "application/octet-stream"
 
 
 class CasdaClient:
@@ -36,10 +40,7 @@ class CasdaClient:
     def __init__(self, settings: Settings, *, metrics: Metrics | None = None) -> None:
         self.settings = settings
         self.metrics = metrics or Metrics()
-        headers = {
-            "User-Agent": settings.user_agent,
-            "Accept": "application/json, text/csv, application/xml",
-        }
+        headers = {"User-Agent": settings.user_agent}
         self._auth: httpx.BasicAuth | None = None
         if settings.username is not None and settings.password is not None:
             self._auth = httpx.BasicAuth(settings.username, settings.password.get_secret_value())
@@ -86,6 +87,7 @@ class CasdaClient:
                 "MAXREC": str(max_records),
                 "QUERY": query,
             },
+            headers={"Accept": TAP_ACCEPT},
             safe_to_retry=True,
             correlation_id=correlation_id,
         )
@@ -101,6 +103,7 @@ class CasdaClient:
         await self.request(
             "GET",
             self.settings.login_url,
+            headers={"Accept": UWS_ACCEPT},
             safe_to_retry=True,
             authenticated=True,
             correlation_id=correlation_id,
@@ -117,6 +120,7 @@ class CasdaClient:
         response = await self.request(
             "GET",
             access_url,
+            headers={"Accept": DATALINK_ACCEPT},
             safe_to_retry=True,
             authenticated=True,
             correlation_id=correlation_id,
@@ -141,6 +145,7 @@ class CasdaClient:
             "POST",
             service_url,
             params=[("ID", token) for token in tokens],
+            headers={"Accept": UWS_ACCEPT},
             safe_to_retry=False,
             authenticated=True,
             correlation_id=correlation_id,
@@ -155,6 +160,7 @@ class CasdaClient:
             "POST",
             f"{job_url}/phase",
             data={"phase": "RUN"},
+            headers={"Accept": UWS_ACCEPT},
             safe_to_retry=False,
             authenticated=True,
             correlation_id=correlation_id,
@@ -165,6 +171,7 @@ class CasdaClient:
         response = await self.request(
             "GET",
             job_url,
+            headers={"Accept": UWS_ACCEPT},
             safe_to_retry=True,
             authenticated=True,
             correlation_id=correlation_id,
@@ -179,16 +186,28 @@ class CasdaClient:
         safe_to_retry: bool,
         authenticated: bool = False,
         correlation_id: str,
+        max_response_bytes: int | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
         self.validate_archive_url(url)
+        response_limit = (
+            self.settings.max_response_bytes
+            if max_response_bytes is None
+            else max_response_bytes
+        )
+        if response_limit < 1:
+            raise ValueError("max_response_bytes must be positive")
         attempts = self.settings.max_retries + 1 if safe_to_retry else 1
         last_error: Exception | None = None
         for attempt in range(attempts):
             started = time.monotonic()
             try:
                 response = await self._request_following_safe_redirects(
-                    method, url, authenticated=authenticated, **kwargs
+                    method,
+                    url,
+                    authenticated=authenticated,
+                    max_response_bytes=response_limit,
+                    **kwargs,
                 )
                 latency_ms = round((time.monotonic() - started) * 1000, 2)
                 LOGGER.info(
@@ -234,7 +253,13 @@ class CasdaClient:
         ) from last_error
 
     async def _request_following_safe_redirects(
-        self, method: str, url: str, *, authenticated: bool, **kwargs: Any
+        self,
+        method: str,
+        url: str,
+        *,
+        authenticated: bool,
+        max_response_bytes: int,
+        **kwargs: Any,
     ) -> httpx.Response:
         initial_origin = self._origin(url)
         if authenticated:
@@ -255,14 +280,24 @@ class CasdaClient:
         current_kwargs.pop("auth", None)
         for _ in range(6):
             request_kwargs = dict(current_kwargs)
-            if authenticated and self._origin(current_url) == initial_origin:
-                request_kwargs["auth"] = self._auth
-            response = await self.http.request(current_method, current_url, **request_kwargs)
+            request = self.http.build_request(current_method, current_url, **request_kwargs)
+            request_auth = (
+                self._auth
+                if authenticated and self._origin(current_url) == initial_origin
+                else None
+            )
+            response = await self.http.send(
+                request,
+                auth=request_auth,
+                stream=True,
+                follow_redirects=False,
+            )
             if not response.is_redirect:
-                return response
+                return await self._read_bounded_response(response, max_response_bytes)
             location = response.headers.get("Location")
             if not location:
-                return response
+                return await self._read_bounded_response(response, max_response_bytes)
+            await response.aclose()
             next_url = urljoin(current_url, location)
             self.validate_archive_url(next_url)
             if response.status_code in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
@@ -271,6 +306,51 @@ class CasdaClient:
                 current_kwargs.pop("params", None)
             current_url = next_url
         raise CasdaError("ARCHIVE_REDIRECT_ERROR", "CASDA returned too many redirects.")
+
+    @staticmethod
+    async def _read_bounded_response(
+        response: httpx.Response, max_response_bytes: int
+    ) -> httpx.Response:
+        """Buffer a decoded response only after enforcing its configured byte ceiling."""
+
+        content_length = response.headers.get("Content-Length")
+        content_encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+        if content_encoding in {"", "identity"}:
+            try:
+                declared_length = int(content_length) if content_length is not None else None
+            except ValueError:
+                declared_length = None
+            if declared_length is not None and declared_length > max_response_bytes:
+                await response.aclose()
+                raise CasdaError(
+                    "ARCHIVE_RESPONSE_TOO_LARGE",
+                    "CASDA returned a response larger than the configured metadata limit.",
+                    details={
+                        "max_response_bytes": max_response_bytes,
+                        "declared_bytes": declared_length,
+                    },
+                )
+
+        body = bytearray()
+        try:
+            async for chunk in response.aiter_bytes():
+                received_bytes = len(body) + len(chunk)
+                if received_bytes > max_response_bytes:
+                    raise CasdaError(
+                        "ARCHIVE_RESPONSE_TOO_LARGE",
+                        "CASDA returned a response larger than the configured metadata limit.",
+                        details={
+                            "max_response_bytes": max_response_bytes,
+                            "received_bytes": received_bytes,
+                        },
+                    )
+                body.extend(chunk)
+        finally:
+            await response.aclose()
+
+        # This is the same decoded-content cache populated by httpx.Response.aread().
+        response._content = bytes(body)  # type: ignore[attr-defined]
+        return response
 
     @asynccontextmanager
     async def stream_download(
@@ -281,7 +361,12 @@ class CasdaClient:
         correlation_id: str,
     ) -> AsyncIterator[httpx.Response]:
         self.validate_archive_url(url)
-        headers = {"Range": f"bytes={offset}-"} if offset else None
+        headers = {
+            "Accept": BINARY_ACCEPT,
+            "Accept-Encoding": "identity",
+        }
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
         timeout = httpx.Timeout(self.settings.download_timeout_seconds)
         started = time.monotonic()
         response: httpx.Response | None = None

@@ -476,12 +476,10 @@ class CasdaService:
                         f"Checksum metadata was unavailable for product {product.product_id}."
                     )
             if include_download_urls and ready:
-                if urlparse(ready.download_url).query:
-                    warnings.append(
-                        f"A short-lived or signed URL was omitted for product {product.product_id}."
-                    )
-                else:
-                    download_url = ready.download_url
+                warnings.append(
+                    f"The archive artifact URL was omitted for product {product.product_id}; "
+                    "CASDA URLs may be bearer credentials even when they have no query string."
+                )
             manifest_products.append(
                 ManifestProduct(
                     product=product,

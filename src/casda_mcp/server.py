@@ -31,6 +31,12 @@ from casda_mcp.service import CasdaService
 
 LOGGER = logging.getLogger(__name__)
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
+ProductType = Literal[
+    "image", "cube", "visibility", "spectrum", "catalogue", "weight", "moment_map"
+]
+ProductSort = Literal[
+    "product_id", "filename", "file_size", "observation_start", "release_date", "distance"
+]
 
 
 def _error(response_type: type[ResponseT], exc: CasdaError) -> ResponseT:
@@ -112,12 +118,13 @@ def create_mcp_server(
             float | None, Field(description="Upper overlapping spectral frequency in hertz.")
         ] = None,
         product_types: Annotated[
-            list[str] | None,
+            list[ProductType] | None,
             Field(
                 description=(
                     "Allowlisted types: image, cube, visibility, spectrum, catalogue, "
                     "weight, moment_map."
-                )
+                ),
+                max_length=7,
             ),
         ] = None,
         collection: Annotated[
@@ -127,7 +134,7 @@ def create_mcp_server(
             bool, Field(description="Exclude unreleased products when true.")
         ] = True,
         sort_by: Annotated[
-            str,
+            ProductSort,
             Field(
                 description=(
                     "Allowlisted sort field: product_id, filename, file_size, "
@@ -168,7 +175,7 @@ def create_mcp_server(
                     observation_end=observation_end,
                     frequency_min_hz=frequency_min_hz,
                     frequency_max_hz=frequency_max_hz,
-                    product_types=product_types,
+                    product_types=list(product_types) if product_types is not None else None,
                     collection=collection,
                     released_only=released_only,
                     sort_by=sort_by,
@@ -223,6 +230,7 @@ def create_mcp_server(
                     "duplicates are removed."
                 ),
                 min_length=1,
+                max_length=500,
             ),
         ],
         idempotency_key: Annotated[
@@ -317,6 +325,7 @@ def create_mcp_server(
             Field(
                 description="Explicit CASDA product identifiers to record reproducibly.",
                 min_length=1,
+                max_length=1000,
             ),
         ],
         source_name: Annotated[
@@ -329,8 +338,8 @@ def create_mcp_server(
             bool,
             Field(
                 description=(
-                    "Include confirmed URLs only when explicitly requested and free of "
-                    "signed query data."
+                    "Request URL inclusion. CASDA artifact URLs are never persisted because "
+                    "opaque paths may be bearer credentials; true records an omission warning."
                 )
             ),
         ] = False,

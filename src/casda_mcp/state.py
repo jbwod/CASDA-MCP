@@ -7,6 +7,7 @@ import os
 import sqlite3
 import stat
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -87,6 +88,14 @@ class StateStore:
             ).fetchall()
             return [json.loads(row[0]) for row in rows]
 
+    def _delete(self, kind: str, key: str) -> None:
+        with self._lock:
+            if self._connection is None:
+                self._memory.pop((kind, key), None)
+                return
+            self._connection.execute("DELETE FROM state WHERE kind=? AND key=?", (kind, key))
+            self._connection.commit()
+
     def put_staging(self, request: StagingRequest) -> None:
         value = request.model_dump(mode="json", exclude_none=False)
         self._put("staging", request.request_id, value)
@@ -104,8 +113,10 @@ class StateStore:
         requested = set(product_ids)
         for value in self._all("staging"):
             staging = StagingRequest.model_validate(value)
+            expiry = self._as_utc(staging.expiry_time)
             if (
                 staging.status in {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "UNKNOWN"}
+                and (expiry is None or expiry > datetime.now(timezone.utc))
                 and set(staging.product_ids) == requested
             ):
                 return staging
@@ -118,7 +129,21 @@ class StateStore:
 
     def get_ready(self, product_id: str) -> ReadyArtifact | None:
         value = self._get("ready", product_id)
-        return ReadyArtifact.model_validate(value) if value else None
+        artifact = ReadyArtifact.model_validate(value) if value else None
+        if artifact is not None:
+            expiry = self._as_utc(artifact.expires_at)
+            if expiry is not None and expiry <= datetime.now(timezone.utc):
+                self._delete("ready", product_id)
+                return None
+        return artifact
+
+    @staticmethod
+    def _as_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
     def put_manifest(self, manifest: Manifest) -> None:
         self._put(

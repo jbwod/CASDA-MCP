@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -56,18 +57,55 @@ def parse_tap_csv(content: bytes) -> list[dict[str, str | None]]:
 
 def _float(row: dict[str, str | None], key: str) -> float | None:
     value = row.get(key)
-    return float(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an invalid numeric metadata value.",
+            details={"field": key},
+        ) from exc
+    if not math.isfinite(parsed):
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned a non-finite numeric metadata value.",
+            details={"field": key},
+        )
+    return parsed
 
 
 def _int(row: dict[str, str | None], key: str) -> int | None:
     value = row.get(key)
-    return int(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an invalid integer metadata value.",
+            details={"field": key},
+        ) from exc
+    if not -(2**63) <= parsed < 2**63:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an out-of-range integer metadata value.",
+            details={"field": key},
+        )
+    return parsed
 
 
 def _datetime(value: str | None) -> datetime | None:
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an invalid datetime value."
+        ) from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
@@ -76,7 +114,12 @@ def _datetime(value: str | None) -> datetime | None:
 def _mjd_datetime(value: float | None) -> datetime | None:
     if value is None:
         return None
-    return datetime(1858, 11, 17, tzinfo=timezone.utc) + timedelta(days=value)
+    try:
+        return datetime(1858, 11, 17, tzinfo=timezone.utc) + timedelta(days=value)
+    except OverflowError as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an out-of-range MJD value."
+        ) from exc
 
 
 def product_from_row(row: dict[str, str | None], *, ready: bool = False) -> Product:
@@ -185,13 +228,13 @@ def product_from_row(row: dict[str, str | None], *, ready: bool = False) -> Prod
 
 
 def observation_from_row(row: dict[str, str | None]) -> Observation:
-    observation_id = row.get("id")
-    sbid = row.get("sbid")
+    observation_id = _int(row, "id")
+    sbid = _int(row, "sbid")
     if observation_id is None or sbid is None:
         raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA observation metadata is incomplete.")
     return Observation(
-        id=int(observation_id),
-        sbid=int(sbid),
+        id=observation_id,
+        sbid=sbid,
         observation_start=_datetime(row.get("obs_start")),
         observation_end=_datetime(row.get("obs_end")),
         observation_start_mjd=_float(row, "obs_start_mjd"),
@@ -203,14 +246,14 @@ def observation_from_row(row: dict[str, str | None]) -> Observation:
 
 
 def project_from_row(row: dict[str, str | None]) -> Project:
-    project_id = row.get("id")
+    project_id = _int(row, "id")
     project_code = row.get("opal_code")
     if project_id is None or project_code is None:
         raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA project metadata is incomplete.")
     names = [row.get("principal_first_name"), row.get("principal_last_name")]
     principal = " ".join(name for name in names if name) or None
     return Project(
-        id=int(project_id),
+        id=project_id,
         project_code=project_code,
         short_name=row.get("short_name"),
         principal_investigator=principal,
@@ -271,14 +314,20 @@ class UwsStatus:
 def parse_uws_status(content: bytes) -> UwsStatus:
     try:
         root = ElementTree.fromstring(content)
-    except ElementTree.ParseError as exc:
+    except Exception as exc:
         raise CasdaError(
             "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned invalid UWS status XML."
         ) from exc
+    if root.tag != f"{UWS_NS}job":
+        raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an unexpected UWS document.")
     phase_node = root.find(f"{UWS_NS}phase")
     phase_text = (phase_node.text or "").upper() if phase_node is not None else ""
     valid = {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "COMPLETED", "ERROR", "ABORTED"}
-    phase: StagingState = phase_text if phase_text in valid else "UNKNOWN"  # type: ignore[assignment]
+    if phase_text not in valid:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an invalid or missing UWS phase."
+        )
+    phase: StagingState = phase_text  # type: ignore[assignment]
     destruction_node = root.find(f"{UWS_NS}destruction")
     error_node = root.find(f"{UWS_NS}errorSummary/{UWS_NS}message")
     results: list[str] = []

@@ -25,6 +25,7 @@ BARE_CHECKSUM_RE = re.compile(
 )
 CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$", re.IGNORECASE)
 INVALID_FILENAME = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
+CHECKSUM_MAX_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,13 +252,22 @@ class Downloader:
     ) -> ChecksumSpec | None:
         if not verify_checksum or not artifact.checksum_url:
             return None
-        response = await self.client.request(
-            "GET",
-            artifact.checksum_url,
-            safe_to_retry=True,
-            correlation_id=correlation_id,
-        )
-        if len(response.content) > 64 * 1024:
+        try:
+            response = await self.client.request(
+                "GET",
+                artifact.checksum_url,
+                headers={"Accept": "text/plain"},
+                safe_to_retry=True,
+                correlation_id=correlation_id,
+                max_response_bytes=CHECKSUM_MAX_BYTES,
+            )
+        except CasdaError as exc:
+            if exc.code != "ARCHIVE_RESPONSE_TOO_LARGE":
+                raise
+            raise CasdaError(
+                "CHECKSUM_UNAVAILABLE", "CASDA returned an oversized checksum document."
+            ) from exc
+        if len(response.content) > CHECKSUM_MAX_BYTES:
             raise CasdaError(
                 "CHECKSUM_UNAVAILABLE", "CASDA returned an oversized checksum document."
             )

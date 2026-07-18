@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -230,13 +231,17 @@ class QueryBuilder:
             value is not None for value in spatial
         ):
             raise ValidationError("ra_deg, dec_deg, and radius_deg must be supplied together.")
+        if criteria.ra_deg is not None and not math.isfinite(criteria.ra_deg):
+            raise ValidationError("ra_deg must be finite.")
         if criteria.ra_deg is not None and not 0 <= criteria.ra_deg < 360:
             raise ValidationError("ra_deg must be in the range [0, 360).")
+        if criteria.dec_deg is not None and not math.isfinite(criteria.dec_deg):
+            raise ValidationError("dec_deg must be finite.")
         if criteria.dec_deg is not None and not -90 <= criteria.dec_deg <= 90:
             raise ValidationError("dec_deg must be in the range [-90, 90].")
-        if (
-            criteria.radius_deg is not None
-            and not 0 < criteria.radius_deg <= self.max_cone_radius_deg
+        if criteria.radius_deg is not None and (
+            not math.isfinite(criteria.radius_deg)
+            or not 0 < criteria.radius_deg <= self.max_cone_radius_deg
         ):
             raise ValidationError(
                 f"radius_deg must be greater than zero and no more than {self.max_cone_radius_deg}."
@@ -277,10 +282,14 @@ class QueryBuilder:
         )
         if start and end and start > end:
             raise ValidationError("observation_start must not be after observation_end.")
-        if criteria.frequency_min_hz is not None and criteria.frequency_min_hz <= 0:
-            raise ValidationError("frequency_min_hz must be greater than zero.")
-        if criteria.frequency_max_hz is not None and criteria.frequency_max_hz <= 0:
-            raise ValidationError("frequency_max_hz must be greater than zero.")
+        if criteria.frequency_min_hz is not None and (
+            not math.isfinite(criteria.frequency_min_hz) or criteria.frequency_min_hz <= 0
+        ):
+            raise ValidationError("frequency_min_hz must be finite and greater than zero.")
+        if criteria.frequency_max_hz is not None and (
+            not math.isfinite(criteria.frequency_max_hz) or criteria.frequency_max_hz <= 0
+        ):
+            raise ValidationError("frequency_max_hz must be finite and greater than zero.")
         if (
             criteria.frequency_min_hz is not None
             and criteria.frequency_max_hz is not None
