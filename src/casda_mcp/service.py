@@ -63,6 +63,7 @@ class CasdaService:
             ttl_seconds=self.settings.cache_ttl_seconds,
             max_entries=self.settings.cache_max_entries,
         )
+        self._staging_submission_lock = asyncio.Lock()
         self.downloader = Downloader(self.settings, self.client, self.metrics)
 
     async def aclose(self) -> None:
@@ -223,6 +224,26 @@ class CasdaService:
                 details={"requested": len(normalized), "maximum": self.settings.max_stage_products},
             )
         key = validate_idempotency_key(idempotency_key) if idempotency_key else str(uuid.uuid4())
+        async with self._staging_submission_lock:
+            return await self._stage_products_locked(
+                normalized,
+                key=key,
+                allow_duplicate=allow_duplicate,
+                requested_at=requested_at,
+                correlation_id=correlation_id,
+            )
+
+    async def _stage_products_locked(
+        self,
+        normalized: list[str],
+        *,
+        key: str,
+        allow_duplicate: bool,
+        requested_at: datetime,
+        correlation_id: str,
+    ) -> StageProductsResponse:
+        """Create at most one archive job while holding the process submission lock."""
+
         existing = self.state.get_staging_by_idempotency(key)
         if existing:
             if set(existing.product_ids) != set(normalized):
@@ -282,43 +303,64 @@ class CasdaService:
         )
         request_id = unquote(urlparse(job_url).path.rstrip("/").rsplit("/", 1)[-1])
         validate_idempotency_key(request_id)
-        await self.client.start_staging_job(job_url, correlation_id=correlation_id)
-        status = "UNKNOWN"
-        failure_reason: str | None = None
-        expiry = None
-        try:
-            archive_status = await self.client.get_staging_status(
-                job_url, correlation_id=correlation_id
-            )
-            status = archive_status.phase
-            failure_reason = archive_status.failure_reason
-            expiry = archive_status.destruction
-        except CasdaError:
-            failure_reason = (
-                "The job was submitted, but its initial archive status was unavailable."
-            )
         request = StagingRequest(
             request_id=request_id,
             idempotency_key=key,
             job_url=job_url,
             submitted_at=utc_now(),
-            status=status,
+            status="PENDING",
             product_ids=normalized,
             filenames={product.product_id: product.filename for product in products},
             products=[
                 StagingItem(
                     product_id=product.product_id,
-                    status=status,
-                    failure_reason=failure_reason,
-                    status_source="archive_request" if status != "UNKNOWN" else "local",
+                    status="PENDING",
+                    status_source="archive_request",
                 )
                 for product in products
             ],
-            expiry_time=expiry,
-            failure_reason=failure_reason,
         )
+        # Store the confirmed archive job before requesting the RUN transition. If the
+        # transition response is lost, callers can reconcile the known job instead of
+        # accidentally creating another one.
         self.state.put_staging(request)
         self.metrics.increment("staging_submission_count")
+        try:
+            await self.client.start_staging_job(job_url, correlation_id=correlation_id)
+        except Exception as exc:
+            archive_code = exc.code if isinstance(exc, CasdaError) else "INTERNAL_ERROR"
+            request.status = "UNKNOWN"
+            request.failure_reason = (
+                "The archive job was created, but its RUN transition could not be confirmed."
+            )
+            request.products = self._staging_items(request, request.status, request.failure_reason)
+            self.state.put_staging(request)
+            raise CasdaError(
+                "STAGING_START_UNCONFIRMED",
+                "The CASDA staging job was created, but starting it could not be confirmed. "
+                "Inspect the stored request before submitting another archive job.",
+                retryable=True,
+                details={
+                    "request_id": request_id,
+                    "idempotency_key": key,
+                    "archive_error": archive_code,
+                },
+            ) from exc
+
+        try:
+            archive_status = await self.client.get_staging_status(
+                job_url, correlation_id=correlation_id
+            )
+            request.status = archive_status.phase
+            request.failure_reason = archive_status.failure_reason
+            request.expiry_time = archive_status.destruction
+        except CasdaError:
+            request.status = "UNKNOWN"
+            request.failure_reason = (
+                "The job was submitted, but its initial archive status was unavailable."
+            )
+        request.products = self._staging_items(request, request.status, request.failure_reason)
+        self.state.put_staging(request)
         return self._stage_response(
             request, requested_at=requested_at, correlation_id=correlation_id
         )

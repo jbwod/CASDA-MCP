@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -66,6 +67,39 @@ class StagingClient:
         return None
 
 
+class BlockingCreateClient(StagingClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.create_entered = asyncio.Event()
+        self.release_create = asyncio.Event()
+
+    async def create_staging_job(
+        self, service_url: str, tokens: list[str], *, correlation_id: str
+    ) -> str:
+        self.created += 1
+        job_number = self.created
+        self.create_entered.set()
+        await self.release_create.wait()
+        return f"https://casda.csiro.au/casda_data_access/data/async/job-{job_number}"
+
+
+class FailingStartClient(StagingClient):
+    async def start_staging_job(self, job_url: str, *, correlation_id: str) -> None:
+        self.started += 1
+        raise CasdaError("ARCHIVE_UNAVAILABLE", "The RUN response was lost.", retryable=True)
+
+
+class BlockingStartClient(StagingClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_entered = asyncio.Event()
+
+    async def start_staging_job(self, job_url: str, *, correlation_id: str) -> None:
+        self.started += 1
+        self.start_entered.set()
+        await asyncio.Event().wait()
+
+
 @pytest.fixture
 def staging_service(tmp_path) -> CasdaService:
     settings = Settings(
@@ -113,6 +147,121 @@ async def test_same_idempotency_key_is_reused(staging_service: CasdaService) -> 
     assert second.request_id == first.request_id
     assert second.reused is True
     assert staging_service.client.created == 1  # type: ignore[attr-defined]
+
+
+async def test_concurrent_same_idempotency_key_creates_one_archive_job(
+    staging_service: CasdaService,
+) -> None:
+    client = BlockingCreateClient()
+    service = CasdaService(staging_service.settings, client=client)  # type: ignore[arg-type]
+    first = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="concurrent-key", allow_duplicate=False)
+    )
+    await client.create_entered.wait()
+    second = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="concurrent-key", allow_duplicate=False)
+    )
+    await asyncio.sleep(0)
+    client.release_create.set()
+
+    first_response, second_response = await asyncio.gather(first, second)
+
+    assert client.created == 1
+    assert first_response.request_id == second_response.request_id
+    assert second_response.reused is True
+
+
+async def test_concurrent_product_set_is_reused_without_duplicate_opt_in(
+    staging_service: CasdaService,
+) -> None:
+    client = BlockingCreateClient()
+    service = CasdaService(staging_service.settings, client=client)  # type: ignore[arg-type]
+    first = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="first-key", allow_duplicate=False)
+    )
+    await client.create_entered.wait()
+    second = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="second-key", allow_duplicate=False)
+    )
+    await asyncio.sleep(0)
+    client.release_create.set()
+
+    first_response, second_response = await asyncio.gather(first, second)
+
+    assert client.created == 1
+    assert first_response.request_id == second_response.request_id
+    assert second_response.idempotency_key == "first-key"
+    assert second_response.reused is True
+
+
+async def test_concurrent_product_set_can_create_two_jobs_with_explicit_opt_in(
+    staging_service: CasdaService,
+) -> None:
+    client = BlockingCreateClient()
+    service = CasdaService(staging_service.settings, client=client)  # type: ignore[arg-type]
+    first = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="first-copy", allow_duplicate=True)
+    )
+    await client.create_entered.wait()
+    second = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="second-copy", allow_duplicate=True)
+    )
+    await asyncio.sleep(0)
+    client.release_create.set()
+
+    first_response, second_response = await asyncio.gather(first, second)
+
+    assert client.created == 2
+    assert first_response.request_id != second_response.request_id
+    assert first_response.reused is False
+    assert second_response.reused is False
+
+
+async def test_created_job_is_persisted_before_run_transition(
+    staging_service: CasdaService,
+) -> None:
+    client = FailingStartClient()
+    service = CasdaService(staging_service.settings, client=client)  # type: ignore[arg-type]
+
+    with pytest.raises(CasdaError) as error:
+        await service.stage_products(
+            ["cube-1"], idempotency_key="lost-run-response", allow_duplicate=False
+        )
+
+    assert error.value.code == "STAGING_START_UNCONFIRMED"
+    assert error.value.details["request_id"] == "job-1"
+    persisted = service.state.get_staging_by_idempotency("lost-run-response")
+    assert persisted is not None
+    assert persisted.request_id == "job-1"
+    assert persisted.status == "UNKNOWN"
+
+    reused = await service.stage_products(
+        ["cube-1"], idempotency_key="lost-run-response", allow_duplicate=False
+    )
+    assert reused.request_id == "job-1"
+    assert reused.reused is True
+    assert client.created == 1
+
+
+async def test_cancellation_during_run_transition_keeps_created_job(
+    staging_service: CasdaService,
+) -> None:
+    client = BlockingStartClient()
+    service = CasdaService(staging_service.settings, client=client)  # type: ignore[arg-type]
+    task = asyncio.create_task(
+        service.stage_products(["cube-1"], idempotency_key="cancelled-run", allow_duplicate=False)
+    )
+    await client.start_entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    persisted = service.state.get_staging_by_idempotency("cancelled-run")
+    assert persisted is not None
+    assert persisted.request_id == "job-1"
+    assert persisted.status == "PENDING"
+    assert client.created == 1
 
 
 async def test_active_product_set_reused_unless_explicitly_allowed(

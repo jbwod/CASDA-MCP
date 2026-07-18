@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import stat
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from casda_mcp.models import ReadyArtifact, StagingItem, StagingRequest
 from casda_mcp.state import StateStore
@@ -42,6 +45,37 @@ def test_sqlite_state_round_trips_idempotency_job_and_ready_url(tmp_path) -> Non
         assert restored_ready.download_url.endswith("signature=opaque")
     finally:
         second.close()
+
+
+def test_sqlite_staging_and_idempotency_pointer_are_atomic(tmp_path) -> None:
+    path = tmp_path / "casda-state.sqlite3"
+    store = StateStore(path)
+    staging = StagingRequest(
+        request_id="job-atomic",
+        idempotency_key="run-atomic",
+        job_url="https://casda.csiro.au/casda_data_access/data/async/job-atomic",
+        submitted_at=datetime.now(timezone.utc),
+        status="PENDING",
+        product_ids=["cube-1"],
+        products=[StagingItem(product_id="cube-1", status="PENDING")],
+    )
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TRIGGER reject_idempotency BEFORE INSERT ON state "
+            "WHEN NEW.kind='idempotency' BEGIN SELECT RAISE(ABORT, 'test failure'); END"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.put_staging(staging)
+        assert store.get_staging("job-atomic") is None
+        assert store.get_staging_by_idempotency("run-atomic") is None
+    finally:
+        store.close()
 
 
 def test_sqlite_state_file_is_created_with_private_permissions(tmp_path) -> None:

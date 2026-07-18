@@ -98,8 +98,31 @@ class StateStore:
 
     def put_staging(self, request: StagingRequest) -> None:
         value = request.model_dump(mode="json", exclude_none=False)
-        self._put("staging", request.request_id, value)
-        self._put("idempotency", request.idempotency_key, {"request_id": request.request_id})
+        pointer = {"request_id": request.request_id}
+        with self._lock:
+            if self._connection is None:
+                self._memory[("staging", request.request_id)] = value
+                self._memory[("idempotency", request.idempotency_key)] = pointer
+                return
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO state(kind, key, value_json) VALUES(?, ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    (
+                        "staging",
+                        request.request_id,
+                        json.dumps(value, separators=(",", ":"), default=str),
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO state(kind, key, value_json) VALUES(?, ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    (
+                        "idempotency",
+                        request.idempotency_key,
+                        json.dumps(pointer, separators=(",", ":")),
+                    ),
+                )
 
     def get_staging(self, request_id: str) -> StagingRequest | None:
         value = self._get("staging", request_id)
