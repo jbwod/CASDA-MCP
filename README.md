@@ -29,9 +29,13 @@ The implementation uses these CASDA interfaces:
 - archive result URLs and checksum sidecars for streamed downloads.
 
 The public TAP availability, schema, product types, project joins, spatial intersection query, and a
-bounded cube search were validated live on 12 July 2026. Authenticated staging and downloads were
+bounded cube search were validated live on 18 July 2026. Authenticated staging and downloads were
 not exercised live because no OPAL credentials were supplied; those paths are covered by mocked
 protocol, partial-failure, checksum, resumption, and filesystem tests.
+
+The dated [CASDA capability matrix](docs/casda-capability-matrix.md) maps the complete public and
+authenticated protocol surface, current implementation status, planned MCP tools, and deliberate
+DAP-only boundaries. It distinguishes current tested coverage from the broader completion target.
 
 ## Requirements
 
@@ -384,6 +388,8 @@ MCP client
 
 The modules are deliberately separated so CASDA protocol behavior does not depend on a particular AI
 client. See [docs/architecture.md](docs/architecture.md) for component and sequence details.
+See [docs/casda-capability-matrix.md](docs/casda-capability-matrix.md) for protocol coverage and the
+implementation roadmap.
 
 ## Testing and validation
 
@@ -462,6 +468,7 @@ secrets only when explicitly enabling downloads or staging.
 ## References
 
 - [CASDA user guide](https://research.csiro.au/casda/casda-user-guide/)
+- [CASDA capability matrix](docs/casda-capability-matrix.md)
 - [Astroquery CASDA module](https://astroquery.readthedocs.io/en/latest/casda/casda.html)
 - [CASDA VO Tools](https://github.com/csiro-rds/casda_vo_tools)
 - [Model Context Protocol server guide](https://modelcontextprotocol.io/docs/develop/build-server)
