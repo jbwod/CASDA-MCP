@@ -9,13 +9,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 from astropy.io.votable import parse as parse_votable
 from defusedxml import ElementTree
 
 from casda_mcp.errors import CasdaError
-from casda_mcp.models import Observation, Product, Project, StagingState
+from casda_mcp.models import Observation, Product, Project, StagingState, UwsResult
 
 UWS_NS = "{http://www.ivoa.net/xml/UWS/v1.0}"
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -309,6 +310,29 @@ class UwsStatus:
     destruction: datetime | None = None
     failure_reason: str | None = None
     result_urls: list[str] = field(default_factory=list)
+    results: list[UwsResult] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.results and self.result_urls:
+            if self.result_urls != [result.href for result in self.results]:
+                raise ValueError("UWS result URLs conflict with structured results")
+        elif self.results:
+            self.result_urls = [result.href for result in self.results]
+        elif self.result_urls:
+            self.results = [
+                UwsResult(
+                    result_id=f"legacy-{index}",
+                    href=_decode_uws_href(href),
+                )
+                for index, href in enumerate(self.result_urls)
+            ]
+            self.result_urls = [result.href for result in self.results]
+
+
+def _decode_uws_href(raw_href: str) -> str:
+    if urlparse(raw_href).scheme.lower() in {"http", "https"}:
+        return raw_href
+    return unquote(raw_href)
 
 
 def parse_uws_status(content: bytes) -> UwsStatus:
@@ -330,16 +354,52 @@ def parse_uws_status(content: bytes) -> UwsStatus:
     phase: StagingState = phase_text  # type: ignore[assignment]
     destruction_node = root.find(f"{UWS_NS}destruction")
     error_node = root.find(f"{UWS_NS}errorSummary/{UWS_NS}message")
-    results: list[str] = []
+    results: list[UwsResult] = []
+    result_ids: set[str] = set()
     results_node = root.find(f"{UWS_NS}results")
     if results_node is not None:
         for result in results_node.findall(f"{UWS_NS}result"):
-            url = result.attrib.get(XLINK_HREF)
-            if url:
-                results.append(url)
+            result_id = (result.attrib.get("id") or "").strip()
+            raw_href = (result.attrib.get(XLINK_HREF) or "").strip()
+            if not result_id or not raw_href:
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned a UWS result without its required id or href.",
+                )
+            if result_id in result_ids:
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned duplicate UWS result identifiers.",
+                )
+            result_ids.add(result_id)
+            size_text = result.attrib.get("size")
+            try:
+                size_bytes = int(size_text) if size_text is not None else None
+            except ValueError as exc:
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned an invalid UWS result size.",
+                ) from exc
+            if size_bytes is not None and size_bytes < 0:
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned an invalid UWS result size.",
+                )
+            # CASDA commonly percent-encodes the entire absolute result URL. Decode
+            # that representation once, but preserve escaping inside an URL that is
+            # already absolute so signed path/query semantics are not changed.
+            href = _decode_uws_href(raw_href)
+            results.append(
+                UwsResult(
+                    result_id=result_id,
+                    href=href,
+                    mime_type=result.attrib.get("mime-type"),
+                    size_bytes=size_bytes,
+                )
+            )
     return UwsStatus(
         phase=phase,
         destruction=_datetime(destruction_node.text) if destruction_node is not None else None,
         failure_reason=(error_node.text or "").strip()[:500] if error_node is not None else None,
-        result_urls=results,
+        results=results,
     )

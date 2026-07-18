@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError
+from casda_mcp.models import StagingItem, StagingRequest, UwsResult
 from casda_mcp.parsers import DatalinkAccess, UwsStatus
 from casda_mcp.service import CasdaService
+from casda_mcp.state import StateStore
 
 PRODUCTS = {
     "cube-1": {
@@ -59,8 +63,8 @@ class StagingClient:
         return self.status
 
     def validate_archive_url(self, url: str) -> str:
-        if not url.startswith("https://"):
-            raise AssertionError("unsafe URL")
+        if not url.startswith(("https://data.csiro.au/", "https://casda.csiro.au/")):
+            raise CasdaError("UNSAFE_ARCHIVE_URL", "unsafe URL")
         return url
 
     async def aclose(self) -> None:
@@ -331,9 +335,15 @@ async def test_completed_status_records_only_confirmed_product_urls(
     staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
         phase="COMPLETED",
         destruction=datetime.now(timezone.utc) + timedelta(hours=1),
-        result_urls=[
-            "https://data.csiro.au/download/cube-1.fits.checksum?signature=secret",
-            "https://data.csiro.au/download/cube-1.fits?signature=secret",
+        results=[
+            UwsResult(
+                result_id="cube-1.checksum",
+                href="https://data.csiro.au/download/cube-1.fits.checksum?signature=secret",
+            ),
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/cube-1.fits?signature=secret",
+            ),
         ],
     )
     result = await staging_service.get_staging_status(staged.request_id or "")
@@ -346,6 +356,325 @@ async def test_completed_status_records_only_confirmed_product_urls(
     assert staging_service.state.get_ready("cube-2") is None
     assert result.provenance is not None
     assert "signature" not in result.provenance.endpoint
+
+
+async def test_completed_initial_status_records_identified_results(
+    staging_service: CasdaService,
+) -> None:
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/archive-name.fits?signature=one",
+            )
+        ],
+    )
+
+    staged = await staging_service.stage_products(
+        ["cube-1"], idempotency_key="immediately-complete", allow_duplicate=False
+    )
+
+    assert staged.status == "COMPLETED"
+    assert staged.products[0].ready_for_download is True
+    ready = staging_service.state.get_ready("cube-1")
+    assert ready is not None
+    assert ready.download_url.endswith("signature=one")
+
+
+async def test_invalid_initial_completed_results_are_persisted_as_unusable(
+    staging_service: CasdaService,
+) -> None:
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id="cube-1",
+                href="https://example.test/unsafe.fits",
+            )
+        ],
+    )
+
+    with pytest.raises(CasdaError) as error:
+        await staging_service.stage_products(
+            ["cube-1"], idempotency_key="invalid-initial-results", allow_duplicate=False
+        )
+
+    assert error.value.code == "UNSAFE_ARCHIVE_URL"
+    persisted = staging_service.state.get_staging_by_idempotency("invalid-initial-results")
+    assert persisted is not None and persisted.status == "COMPLETED"
+    assert persisted.products[0].ready_for_download is False
+    assert persisted.results == []
+    assert persisted.failure_reason is not None
+    assert staging_service.state.get_ready("cube-1") is None
+
+
+async def test_exact_result_ids_override_duplicate_filenames_and_result_basenames(
+    staging_service: CasdaService,
+) -> None:
+    original = PRODUCTS["cube-2"]["filename"]
+    PRODUCTS["cube-2"]["filename"] = "cube-1.fits"
+    try:
+        staged = await staging_service.stage_products(
+            ["cube-1", "cube-2"], idempotency_key="duplicate-filenames", allow_duplicate=False
+        )
+        staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+            phase="COMPLETED",
+            results=[
+                UwsResult(
+                    result_id="cube-1",
+                    href="https://data.csiro.au/download/shared.fits?signature=one",
+                ),
+                UwsResult(
+                    result_id="cube-2",
+                    href="https://data.csiro.au/download/shared.fits?signature=two",
+                ),
+            ],
+        )
+
+        status = await staging_service.get_staging_status(staged.request_id or "")
+
+        assert status.download_ready is True
+        first = staging_service.state.get_ready("cube-1")
+        second = staging_service.state.get_ready("cube-2")
+        assert first is not None and first.download_url.endswith("signature=one")
+        assert second is not None and second.download_url.endswith("signature=two")
+    finally:
+        PRODUCTS["cube-2"]["filename"] = original
+
+
+async def test_unique_legacy_result_id_uses_conservative_filename_fallback(
+    staging_service: CasdaService,
+) -> None:
+    staged = await staging_service.stage_products(
+        ["cube-1"], idempotency_key="legacy-result", allow_duplicate=False
+    )
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id="encap-123",
+                href="https://data.csiro.au/download/cube-1.fits?signature=data",
+            ),
+            UwsResult(
+                result_id="encap-123.checksum",
+                href="https://data.csiro.au/download/cube-1.fits.checksum?signature=sum",
+            ),
+        ],
+    )
+
+    status = await staging_service.get_staging_status(staged.request_id or "")
+
+    assert status.download_ready is True
+    ready = staging_service.state.get_ready("cube-1")
+    assert ready is not None
+    assert ready.checksum_url is not None and ready.checksum_url.endswith("signature=sum")
+
+
+async def test_ambiguous_filename_fallback_does_not_mark_products_ready(
+    staging_service: CasdaService,
+) -> None:
+    original = PRODUCTS["cube-2"]["filename"]
+    PRODUCTS["cube-2"]["filename"] = "cube-1.fits"
+    try:
+        staged = await staging_service.stage_products(
+            ["cube-1", "cube-2"], idempotency_key="ambiguous-fallback", allow_duplicate=False
+        )
+        staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+            phase="COMPLETED",
+            results=[
+                UwsResult(
+                    result_id="legacy-result",
+                    href="https://data.csiro.au/download/cube-1.fits",
+                )
+            ],
+        )
+
+        status = await staging_service.get_staging_status(staged.request_id or "")
+
+        assert status.download_ready is False
+        assert staging_service.state.get_ready("cube-1") is None
+        assert staging_service.state.get_ready("cube-2") is None
+    finally:
+        PRODUCTS["cube-2"]["filename"] = original
+
+
+async def test_completed_result_refresh_removes_stale_readiness(
+    staging_service: CasdaService,
+) -> None:
+    staged = await staging_service.stage_products(
+        ["cube-1", "cube-2"], idempotency_key="result-refresh", allow_duplicate=False
+    )
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/cube-1.fits",
+            ),
+            UwsResult(
+                result_id="cube-2",
+                href="https://data.csiro.au/download/cube-2.fits",
+            ),
+        ],
+    )
+    await staging_service.get_staging_status(staged.request_id or "")
+    assert staging_service.state.get_ready("cube-2") is not None
+
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/cube-1.fits",
+            )
+        ],
+    )
+    refreshed = await staging_service.get_staging_status(staged.request_id or "")
+
+    assert refreshed.download_ready is False
+    assert staging_service.state.get_ready("cube-1") is not None
+    assert staging_service.state.get_ready("cube-2") is None
+
+
+@pytest.mark.parametrize(
+    ("result_id", "ready"),
+    [("legacy-result", False), ("cube-1", True)],
+)
+async def test_encoded_path_separator_is_never_used_for_filename_fallback(
+    staging_service: CasdaService,
+    result_id: str,
+    ready: bool,
+) -> None:
+    staged = await staging_service.stage_products(
+        ["cube-1"], idempotency_key=f"encoded-separator-{result_id}", allow_duplicate=False
+    )
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED",
+        results=[
+            UwsResult(
+                result_id=result_id,
+                href="https://data.csiro.au/download/prefix%2Fcube-1.fits",
+            )
+        ],
+    )
+
+    status = await staging_service.get_staging_status(staged.request_id or "")
+
+    assert status.download_ready is ready
+    assert (staging_service.state.get_ready("cube-1") is not None) is ready
+
+
+async def test_legacy_sqlite_result_urls_are_reconciled_on_idempotent_reuse(
+    staging_service: CasdaService,
+    tmp_path,
+) -> None:
+    path = tmp_path / "legacy-state.sqlite3"
+    StateStore(path).close()
+    legacy = StagingRequest(
+        request_id="legacy-job",
+        idempotency_key="legacy-idempotency",
+        job_url="https://casda.csiro.au/casda_data_access/data/async/legacy-job",
+        submitted_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status="COMPLETED",
+        product_ids=["cube-1"],
+        filenames={"cube-1": "cube-1.fits"},
+        products=[StagingItem(product_id="cube-1", status="UNKNOWN")],
+        expiry_time=datetime.now(timezone.utc) + timedelta(hours=1),
+        result_urls=["https%3A%2F%2Fdata.csiro.au%2Fdownload%2Fcube-1.fits%3Fsignature%3Dlegacy"],
+    )
+    payload = legacy.model_dump(mode="json", exclude_none=False)
+    payload.pop("results")
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "INSERT INTO state(kind, key, value_json) VALUES('staging', ?, ?)",
+            (legacy.request_id, json.dumps(payload)),
+        )
+        connection.execute(
+            "INSERT INTO state(kind, key, value_json) VALUES('idempotency', ?, ?)",
+            (legacy.idempotency_key, json.dumps({"request_id": legacy.request_id})),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    state = StateStore(path)
+    service = CasdaService(  # type: ignore[arg-type]
+        staging_service.settings,
+        client=StagingClient(),
+        state=state,
+    )
+
+    try:
+        reused = await service.stage_products(
+            ["cube-1"], idempotency_key="legacy-idempotency", allow_duplicate=False
+        )
+
+        assert reused.reused is True
+        assert reused.products[0].ready_for_download is True
+        ready_artifact = state.get_ready("cube-1")
+        assert ready_artifact is not None
+        assert ready_artifact.download_url == (
+            "https://data.csiro.au/download/cube-1.fits?signature=legacy"
+        )
+        migrated = state.get_staging("legacy-job")
+        assert migrated is not None and migrated.result_urls == []
+        assert migrated.results[0].href == ready_artifact.download_url
+        assert service.client.created == 0  # type: ignore[attr-defined]
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        [
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/one.fits",
+            ),
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/two.fits",
+            ),
+        ],
+        [
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/shared.fits",
+            ),
+            UwsResult(
+                result_id="cube-2",
+                href="https://data.csiro.au/download/shared.fits",
+            ),
+        ],
+        [
+            UwsResult(
+                result_id="cube-1",
+                href="https://data.csiro.au/download/one.fits",
+            ),
+            UwsResult(result_id="unknown", href="https://example.test/unsafe.fits"),
+        ],
+    ],
+)
+async def test_malformed_result_identity_writes_no_ready_artifacts(
+    staging_service: CasdaService,
+    results: list[UwsResult],
+) -> None:
+    staged = await staging_service.stage_products(
+        ["cube-1", "cube-2"], idempotency_key=str(id(results)), allow_duplicate=False
+    )
+    staging_service.client.status = UwsStatus(  # type: ignore[attr-defined]
+        phase="COMPLETED", results=results
+    )
+
+    with pytest.raises(CasdaError):
+        await staging_service.get_staging_status(staged.request_id or "")
+
+    assert staging_service.state.get_ready("cube-1") is None
+    assert staging_service.state.get_ready("cube-2") is None
+    persisted = staging_service.state.get_staging(staged.request_id or "")
+    assert persisted is not None and persisted.status == "COMPLETED"
 
 
 async def test_partial_archive_failure_is_returned_per_product(

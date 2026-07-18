@@ -78,6 +78,149 @@ def test_sqlite_staging_and_idempotency_pointer_are_atomic(tmp_path) -> None:
         store.close()
 
 
+def test_sqlite_ready_artifact_batch_is_atomic(tmp_path) -> None:
+    path = tmp_path / "casda-state.sqlite3"
+    store = StateStore(path)
+    artifacts = [
+        ReadyArtifact(
+            product_id=product_id,
+            request_id="job-ready",
+            download_url=f"https://data.csiro.au/{product_id}.fits",
+            confirmed_at=datetime.now(timezone.utc),
+        )
+        for product_id in ("cube-1", "cube-2")
+    ]
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TRIGGER reject_second_ready BEFORE INSERT ON state "
+            "WHEN NEW.kind='ready' AND NEW.key='cube-2' "
+            "BEGIN SELECT RAISE(ABORT, 'test failure'); END"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.put_ready_many(artifacts)
+        assert store.get_ready("cube-1") is None
+        assert store.get_ready("cube-2") is None
+    finally:
+        store.close()
+
+
+def test_replacing_request_readiness_removes_stale_results_only() -> None:
+    store = StateStore()
+    confirmed_at = datetime.now(timezone.utc)
+    store.put_ready_many(
+        [
+            ReadyArtifact(
+                product_id="cube-1",
+                request_id="job-one",
+                download_url="https://data.csiro.au/old-one.fits",
+                confirmed_at=confirmed_at,
+            ),
+            ReadyArtifact(
+                product_id="cube-2",
+                request_id="job-two",
+                download_url="https://data.csiro.au/newer-two.fits",
+                confirmed_at=confirmed_at,
+            ),
+        ]
+    )
+
+    completed = StagingRequest(
+        request_id="job-one",
+        idempotency_key="ready-replacement",
+        job_url="https://casda.csiro.au/casda_data_access/data/async/job-one",
+        submitted_at=confirmed_at,
+        status="COMPLETED",
+        product_ids=["cube-1", "cube-2"],
+        products=[
+            StagingItem(product_id="cube-1", status="COMPLETED", ready_for_download=True),
+            StagingItem(product_id="cube-2", status="UNKNOWN"),
+        ],
+    )
+    store.put_completed_staging(
+        completed,
+        [
+            ReadyArtifact(
+                product_id="cube-1",
+                request_id="job-one",
+                download_url="https://data.csiro.au/new-one.fits",
+                confirmed_at=confirmed_at,
+            )
+        ],
+    )
+
+    first = store.get_ready("cube-1")
+    second = store.get_ready("cube-2")
+    assert first is not None and first.download_url.endswith("new-one.fits")
+    assert second is not None and second.request_id == "job-two"
+    persisted = store.get_staging("job-one")
+    assert persisted is not None and persisted.status == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    "trigger_sql",
+    [
+        "CREATE TRIGGER reject_completed_staging BEFORE UPDATE ON state "
+        "WHEN OLD.kind='staging' BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+        "CREATE TRIGGER reject_completed_ready BEFORE INSERT ON state "
+        "WHEN NEW.kind='ready' AND NEW.key='cube-2' "
+        "BEGIN SELECT RAISE(ABORT, 'test failure'); END",
+    ],
+)
+def test_completed_staging_and_ready_results_roll_back_together(tmp_path, trigger_sql) -> None:
+    path = tmp_path / "casda-state.sqlite3"
+    store = StateStore(path)
+    pending = StagingRequest(
+        request_id="job-completion",
+        idempotency_key="complete-atomically",
+        job_url="https://casda.csiro.au/casda_data_access/data/async/job-completion",
+        submitted_at=datetime.now(timezone.utc),
+        status="PENDING",
+        product_ids=["cube-1", "cube-2"],
+        products=[
+            StagingItem(product_id="cube-1", status="PENDING"),
+            StagingItem(product_id="cube-2", status="PENDING"),
+        ],
+    )
+    store.put_staging(pending)
+    completed = pending.model_copy(deep=True)
+    completed.status = "COMPLETED"
+    completed.products = [
+        StagingItem(product_id="cube-1", status="COMPLETED", ready_for_download=True),
+        StagingItem(product_id="cube-2", status="COMPLETED", ready_for_download=True),
+    ]
+    artifacts = [
+        ReadyArtifact(
+            product_id=product_id,
+            request_id=completed.request_id,
+            download_url=f"https://data.csiro.au/{product_id}.fits",
+            confirmed_at=datetime.now(timezone.utc),
+        )
+        for product_id in completed.product_ids
+    ]
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(trigger_sql)
+        connection.commit()
+    finally:
+        connection.close()
+
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.put_completed_staging(completed, artifacts)
+        persisted = store.get_staging(completed.request_id)
+        assert persisted is not None and persisted.status == "PENDING"
+        assert store.get_ready("cube-1") is None
+        assert store.get_ready("cube-2") is None
+    finally:
+        store.close()
+
+
 def test_sqlite_state_file_is_created_with_private_permissions(tmp_path) -> None:
     private_dir = tmp_path / "private"
     path = private_dir / "casda-state.sqlite3"

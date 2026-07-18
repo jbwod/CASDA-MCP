@@ -115,6 +115,15 @@ class StagingItem(BaseModel):
     status_source: Literal["archive_product", "archive_request", "local"] = "local"
 
 
+class UwsResult(BaseModel):
+    """One identified UWS result reference returned by CASDA."""
+
+    result_id: str
+    href: str = Field(repr=False)
+    mime_type: str | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
 class StagingRequest(BaseModel):
     request_id: str
     idempotency_key: str
@@ -126,6 +135,9 @@ class StagingRequest(BaseModel):
     products: list[StagingItem]
     expiry_time: datetime | None = None
     failure_reason: str | None = None
+    results: list[UwsResult] = Field(default_factory=list, repr=False)
+    # Retained only so state written by releases before structured UWS results can
+    # still be reconciled through the conservative filename fallback.
     result_urls: list[str] = Field(default_factory=list, repr=False)
     reused: bool = False
 

@@ -146,9 +146,114 @@ class StateStore:
         return None
 
     def put_ready(self, artifact: ReadyArtifact) -> None:
-        self._put(
-            "ready", artifact.product_id, artifact.model_dump(mode="json", exclude_none=False)
-        )
+        self.put_ready_many([artifact])
+
+    def put_ready_many(self, artifacts: list[ReadyArtifact]) -> None:
+        """Persist a validated group of ready artifacts atomically."""
+
+        values = [
+            (
+                artifact.product_id,
+                artifact.model_dump(mode="json", exclude_none=False),
+            )
+            for artifact in artifacts
+        ]
+        with self._lock:
+            if self._connection is None:
+                for product_id, value in values:
+                    self._memory[("ready", product_id)] = value
+                return
+            with self._connection:
+                self._connection.executemany(
+                    "INSERT INTO state(kind, key, value_json) VALUES('ready', ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    [
+                        (
+                            product_id,
+                            json.dumps(value, separators=(",", ":"), default=str),
+                        )
+                        for product_id, value in values
+                    ],
+                )
+
+    def put_completed_staging(
+        self,
+        request: StagingRequest,
+        artifacts: list[ReadyArtifact],
+    ) -> None:
+        """Atomically persist a completed request and its current ready results."""
+
+        if request.status != "COMPLETED":
+            raise ValueError("Only completed staging requests can own ready artifacts")
+        requested = set(request.product_ids)
+        artifact_ids = [artifact.product_id for artifact in artifacts]
+        if (
+            len(artifact_ids) != len(set(artifact_ids))
+            or any(artifact.product_id not in requested for artifact in artifacts)
+            or any(artifact.request_id != request.request_id for artifact in artifacts)
+        ):
+            raise ValueError("Ready artifacts must uniquely belong to the staging request")
+        request_value = request.model_dump(mode="json", exclude_none=False)
+        pointer = {"request_id": request.request_id}
+        values = [
+            (
+                artifact.product_id,
+                artifact.model_dump(mode="json", exclude_none=False),
+            )
+            for artifact in artifacts
+        ]
+        with self._lock:
+            if self._connection is None:
+                for product_id in requested:
+                    current = self._memory.get(("ready", product_id))
+                    if current is not None and current.get("request_id") == request.request_id:
+                        self._memory.pop(("ready", product_id), None)
+                for product_id, value in values:
+                    self._memory[("ready", product_id)] = value
+                self._memory[("staging", request.request_id)] = request_value
+                self._memory[("idempotency", request.idempotency_key)] = pointer
+                return
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO state(kind, key, value_json) VALUES('staging', ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    (
+                        request.request_id,
+                        json.dumps(request_value, separators=(",", ":"), default=str),
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO state(kind, key, value_json) VALUES('idempotency', ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    (
+                        request.idempotency_key,
+                        json.dumps(pointer, separators=(",", ":")),
+                    ),
+                )
+                for product_id in requested:
+                    row = self._connection.execute(
+                        "SELECT value_json FROM state WHERE kind='ready' AND key=?",
+                        (product_id,),
+                    ).fetchone()
+                    if (
+                        row is not None
+                        and json.loads(row[0]).get("request_id") == request.request_id
+                    ):
+                        self._connection.execute(
+                            "DELETE FROM state WHERE kind='ready' AND key=?",
+                            (product_id,),
+                        )
+                self._connection.executemany(
+                    "INSERT INTO state(kind, key, value_json) VALUES('ready', ?, ?) "
+                    "ON CONFLICT(kind, key) DO UPDATE SET value_json=excluded.value_json",
+                    [
+                        (
+                            product_id,
+                            json.dumps(value, separators=(",", ":"), default=str),
+                        )
+                        for product_id, value in values
+                    ],
+                )
 
     def get_ready(self, product_id: str) -> ReadyArtifact | None:
         value = self._get("ready", product_id)

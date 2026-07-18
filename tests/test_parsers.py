@@ -6,6 +6,7 @@ import pytest
 
 from casda_mcp.errors import CasdaError
 from casda_mcp.parsers import (
+    UwsStatus,
     parse_datalink_access,
     parse_tap_csv,
     parse_uws_status,
@@ -68,12 +69,61 @@ def test_uws_status_parses_phase_expiry_error_and_results() -> None:
       xmlns:xlink='http://www.w3.org/1999/xlink'>
       <uws:phase>COMPLETED</uws:phase>
       <uws:destruction>2026-07-13T00:00:00Z</uws:destruction>
-      <uws:results><uws:result xlink:href='https://data.csiro.au/file.fits'/></uws:results>
+      <uws:results><uws:result id='cube-1' size='42' mime-type='application/fits'
+        xlink:href='https%3A%2F%2Fdata.csiro.au%2Ffile.fits%3Fsignature%3Da%252Fb'/></uws:results>
     </uws:job>"""
     result = parse_uws_status(content)
     assert result.phase == "COMPLETED"
     assert result.destruction == datetime(2026, 7, 13, tzinfo=timezone.utc)
-    assert result.result_urls == ["https://data.csiro.au/file.fits"]
+    assert result.result_urls == ["https://data.csiro.au/file.fits?signature=a%2Fb"]
+    assert result.results[0].result_id == "cube-1"
+    assert result.results[0].mime_type == "application/fits"
+    assert result.results[0].size_bytes == 42
+
+
+def test_uws_status_preserves_escaping_inside_absolute_result_url() -> None:
+    content = b"""<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'
+      xmlns:xlink='http://www.w3.org/1999/xlink'>
+      <uws:phase>COMPLETED</uws:phase>
+      <uws:results><uws:result id='cube-1'
+        xlink:href='https://data.csiro.au/folder%2Ffile.fits?signature=a%2Fb'/></uws:results>
+    </uws:job>"""
+    result = parse_uws_status(content)
+    assert result.results[0].href == ("https://data.csiro.au/folder%2Ffile.fits?signature=a%2Fb")
+
+
+def test_uws_status_accepts_legacy_result_url_construction() -> None:
+    status = UwsStatus(
+        "COMPLETED",
+        None,
+        None,
+        ["https%3A%2F%2Fdata.csiro.au%2Ffile.fits%3Fsignature%3Dlegacy"],
+    )
+    assert status.result_urls == ["https://data.csiro.au/file.fits?signature=legacy"]
+    assert status.results[0].result_id == "legacy-0"
+
+
+@pytest.mark.parametrize(
+    "result_xml",
+    [
+        "<uws:result xlink:href='https://data.csiro.au/file.fits'/>",
+        "<uws:result id='cube-1'/>",
+        "<uws:result id='cube-1' size='not-a-number' "
+        "xlink:href='https://data.csiro.au/file.fits'/>",
+        "<uws:result id='cube-1' size='-1' xlink:href='https://data.csiro.au/file.fits'/>",
+        "<uws:result id='cube-1' xlink:href='https://data.csiro.au/one'/>"
+        "<uws:result id='cube-1' xlink:href='https://data.csiro.au/two'/>",
+    ],
+)
+def test_uws_invalid_result_identity_or_size_is_rejected(result_xml: str) -> None:
+    content = f"""<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'
+      xmlns:xlink='http://www.w3.org/1999/xlink'>
+      <uws:phase>COMPLETED</uws:phase>
+      <uws:results>{result_xml}</uws:results>
+    </uws:job>""".encode()
+    with pytest.raises(CasdaError) as error:
+        parse_uws_status(content)
+    assert error.value.code == "MALFORMED_ARCHIVE_RESPONSE"
 
 
 def test_uws_missing_phase_and_unexpected_root_are_rejected() -> None:

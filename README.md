@@ -457,7 +457,8 @@ secrets only when explicitly enabling downloads or staging.
 - CASDA's current ADQL service does not support `CURRENT_TIMESTAMP`; public-only search retrieves the
   configured bounded window and removes future release dates locally.
 - UWS reports an overall job phase. A product is marked individually ready only when a completed job
-  returns a result URL matching its archive filename; otherwise its state remains `UNKNOWN`.
+  returns its unique product result identifier. A globally unambiguous filename fallback is retained
+  for historical jobs; ambiguous results remain `UNKNOWN`.
 - Resumption is attempted within one download call after a transient read failure. Final failure
   removes the temporary file, so resumption does not persist across separate calls.
 - Source-name resolution and row-level catalogue science queries are outside this server. No generic

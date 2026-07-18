@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -28,6 +29,7 @@ from casda_mcp.models import (
     StagingItem,
     StagingRequest,
     StagingStatusResponse,
+    UwsResult,
 )
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import observation_from_row, product_from_row, project_from_row
@@ -251,6 +253,7 @@ class CasdaService:
                     "IDEMPOTENCY_CONFLICT",
                     "The idempotency key was already used with different product identifiers.",
                 )
+            self._reconcile_completed_staging(existing)
             return self._stage_response(existing, requested_at=requested_at, reused=True)
         active = self.state.find_active_staging(normalized)
         if active and not allow_duplicate:
@@ -354,13 +357,18 @@ class CasdaService:
             request.status = archive_status.phase
             request.failure_reason = archive_status.failure_reason
             request.expiry_time = archive_status.destruction
+            request.results = archive_status.results
+            request.result_urls = []
         except CasdaError:
             request.status = "UNKNOWN"
             request.failure_reason = (
                 "The job was submitted, but its initial archive status was unavailable."
             )
-        request.products = self._staging_items(request, request.status, request.failure_reason)
-        self.state.put_staging(request)
+        if request.status == "COMPLETED":
+            self._store_completed_staging(request)
+        else:
+            request.products = self._staging_items(request, request.status, request.failure_reason)
+            self.state.put_staging(request)
         return self._stage_response(
             request, requested_at=requested_at, correlation_id=correlation_id
         )
@@ -377,18 +385,20 @@ class CasdaService:
                 "state database.",
                 details={"request_id": request_id},
             )
+        self._reconcile_completed_staging(request)
         archive = await self.client.get_staging_status(
             request.job_url, correlation_id=correlation_id
         )
         request.status = archive.phase
         request.expiry_time = archive.destruction
         request.failure_reason = archive.failure_reason
-        request.result_urls = archive.result_urls
-        request.products = self._staging_items(request, archive.phase, archive.failure_reason)
+        request.results = archive.results
+        request.result_urls = []
         if archive.phase == "COMPLETED":
-            self._record_ready_artifacts(request)
+            self._store_completed_staging(request)
+        else:
             request.products = self._staging_items(request, archive.phase, archive.failure_reason)
-        self.state.put_staging(request)
+            self.state.put_staging(request)
         if archive.phase in {"ERROR", "ABORTED"}:
             self.metrics.increment("staging_failure_count")
         active = archive.phase in {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED"}
@@ -639,11 +649,17 @@ class CasdaService:
         request: StagingRequest,
         phase: str,
         failure_reason: str | None,
+        *,
+        ready_product_ids: set[str] | None = None,
     ) -> list[StagingItem]:
         items: list[StagingItem] = []
         for product_id in request.product_ids:
-            ready = self.state.get_ready(product_id)
-            if ready and ready.request_id == request.request_id:
+            if ready_product_ids is None:
+                ready = self.state.get_ready(product_id)
+                is_ready = ready is not None and ready.request_id == request.request_id
+            else:
+                is_ready = product_id in ready_product_ids
+            if is_ready:
                 items.append(
                     StagingItem(
                         product_id=product_id,
@@ -675,31 +691,161 @@ class CasdaService:
                 )
         return items
 
-    def _record_ready_artifacts(self, request: StagingRequest) -> None:
-        by_filename = {
-            unquote(urlparse(url).path.rsplit("/", 1)[-1]): url for url in request.result_urls
-        }
-        for product_id, filename in request.filenames.items():
+    def _store_completed_staging(self, request: StagingRequest) -> None:
+        try:
+            artifacts = self._build_ready_artifacts(request)
+        except CasdaError:
+            request.results = []
+            request.result_urls = []
+            request.failure_reason = (
+                "CASDA completed the job, but returned unusable result metadata."
+            )
+            request.products = self._staging_items(
+                request,
+                "COMPLETED",
+                request.failure_reason,
+                ready_product_ids=set(),
+            )
+            self.state.put_completed_staging(request, [])
+            raise
+        request.products = self._staging_items(
+            request,
+            "COMPLETED",
+            request.failure_reason,
+            ready_product_ids={artifact.product_id for artifact in artifacts},
+        )
+        self.state.put_completed_staging(request, artifacts)
+
+    def _reconcile_completed_staging(self, request: StagingRequest) -> None:
+        if request.status == "COMPLETED" and (request.results or request.result_urls):
+            self._store_completed_staging(request)
+
+    def _build_ready_artifacts(self, request: StagingRequest) -> list[ReadyArtifact]:
+        expiry = request.expiry_time
+        if expiry is not None:
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= utc_now():
+                return []
+        results = list(request.results)
+        migrated_legacy_results = not results and bool(request.result_urls)
+        if not results:
+            results = [
+                UwsResult(
+                    result_id=f"legacy-{index}",
+                    href=(
+                        url if urlparse(url).scheme.lower() in {"http", "https"} else unquote(url)
+                    ),
+                )
+                for index, url in enumerate(request.result_urls)
+            ]
+
+        by_id: dict[str, UwsResult] = {}
+        for result in results:
+            if not result.result_id or result.result_id in by_id:
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned duplicate or empty UWS result identifiers.",
+                )
+            self.client.validate_archive_url(result.href)
+            by_id[result.result_id] = result
+
+        def result_basename(result: UwsResult) -> str | None:
+            encoded_segment = urlparse(result.href).path.rsplit("/", 1)[-1]
+            decoded_segment = unquote(encoded_segment)
+            if "/" in decoded_segment or "\\" in decoded_segment:
+                return None
+            return decoded_segment
+
+        requested_basenames = Counter(
+            Path(filename).name for filename in request.filenames.values() if filename
+        )
+        result_basenames = Counter(
+            basename for result in results if (basename := result_basename(result)) is not None
+        )
+        claimed_ids: set[str] = set()
+        assignments: dict[str, tuple[UwsResult, UwsResult | None]] = {}
+
+        # CASDA defines the authoritative pair as <product-id> and
+        # <product-id>.checksum. Filenames are not identifiers and may collide.
+        for product_id in request.product_ids:
+            data_result = by_id.get(product_id)
+            if data_result is None:
+                continue
+            checksum_result = by_id.get(f"{product_id}.checksum")
+            assignments[product_id] = (data_result, checksum_result)
+            claimed_ids.add(data_result.result_id)
+            if checksum_result is not None:
+                claimed_ids.add(checksum_result.result_id)
+
+        # Older persisted jobs, and historical evaluation-file result IDs, may not
+        # align with the requested publisher DID. Permit a filename fallback only
+        # when both sides are globally unique and every selected result is unclaimed.
+        for product_id in request.product_ids:
+            if product_id in assignments:
+                continue
+            filename = request.filenames.get(product_id)
             if not filename:
                 continue
             expected = Path(filename).name
-            download_url = by_filename.get(expected)
-            if not download_url:
+            if requested_basenames[expected] != 1 or result_basenames[expected] != 1:
                 continue
-            self.client.validate_archive_url(download_url)
-            checksum_url = by_filename.get(f"{expected}.checksum")
-            if checksum_url:
-                self.client.validate_archive_url(checksum_url)
-            self.state.put_ready(
-                ReadyArtifact(
-                    product_id=product_id,
-                    request_id=request.request_id,
-                    download_url=download_url,
-                    checksum_url=checksum_url,
-                    confirmed_at=utc_now(),
-                    expires_at=request.expiry_time,
-                )
+            candidates = [
+                result
+                for result in results
+                if result.result_id not in claimed_ids
+                and not result.result_id.endswith(".checksum")
+                and result_basename(result) == expected
+            ]
+            if len(candidates) != 1:
+                continue
+            data_result = candidates[0]
+            checksum_result = by_id.get(f"{data_result.result_id}.checksum")
+            if checksum_result is not None and checksum_result.result_id in claimed_ids:
+                checksum_result = None
+            if checksum_result is None:
+                checksum_name = f"{expected}.checksum"
+                checksum_candidates = [
+                    result
+                    for result in results
+                    if result.result_id not in claimed_ids
+                    and result_basename(result) == checksum_name
+                ]
+                if len(checksum_candidates) == 1:
+                    checksum_result = checksum_candidates[0]
+            assignments[product_id] = (data_result, checksum_result)
+            claimed_ids.add(data_result.result_id)
+            if checksum_result is not None:
+                claimed_ids.add(checksum_result.result_id)
+
+        selected_hrefs = [
+            result.href
+            for data_result, checksum_result in assignments.values()
+            for result in (data_result, checksum_result)
+            if result is not None
+        ]
+        if len(selected_hrefs) != len(set(selected_hrefs)):
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA assigned one UWS result location to multiple staged artifacts.",
             )
+
+        confirmed_at = utc_now()
+        artifacts = [
+            ReadyArtifact(
+                product_id=product_id,
+                request_id=request.request_id,
+                download_url=data_result.href,
+                checksum_url=checksum_result.href if checksum_result is not None else None,
+                confirmed_at=confirmed_at,
+                expires_at=request.expiry_time,
+            )
+            for product_id, (data_result, checksum_result) in assignments.items()
+        ]
+        if migrated_legacy_results:
+            request.results = results
+            request.result_urls = []
+        return artifacts
 
     @staticmethod
     def _manifest_label(value: str | None, field: str) -> str | None:
