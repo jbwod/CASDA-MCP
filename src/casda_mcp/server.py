@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, TypeVar, cast
+from typing import Annotated, Any, Literal, TypeVar, cast
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -135,7 +135,9 @@ def create_mcp_server(
                 )
             ),
         ] = "product_id",
-        sort_order: Annotated[str, Field(description="Sort direction: asc or desc.")] = "asc",
+        sort_order: Annotated[
+            Literal["asc", "desc"], Field(description="Sort direction: asc or desc.")
+        ] = "asc",
         page: Annotated[
             int,
             Field(description="One-based page within the configured bounded result window.", ge=1),
@@ -170,7 +172,7 @@ def create_mcp_server(
                     collection=collection,
                     released_only=released_only,
                     sort_by=sort_by,
-                    sort_order=sort_order,  # type: ignore[arg-type]
+                    sort_order=sort_order,
                     page=page,
                     page_size=page_size,
                 )

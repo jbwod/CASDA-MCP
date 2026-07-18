@@ -142,7 +142,7 @@ configuration fails fast.
 | `CASDA_MAX_RETRIES` | `3` | Retries for safe reads only, with exponential backoff, jitter, and `Retry-After`. |
 | `CASDA_CACHE_TTL_SECONDS` | `60` | Read-only metadata cache TTL; zero disables caching. |
 | `CASDA_CACHE_MAX_ENTRIES` | `256` | Process-local cache bound; zero disables caching. |
-| `CASDA_STATE_DB` | unset | Optional SQLite state file. Default state is process-local memory. |
+| `CASDA_STATE_DB` | unset | Optional SQLite state file, forced to owner-only mode (`0600`) on POSIX. Default state is process-local memory. |
 
 Copy `.env.example` to `.env` for local development; it is loaded automatically and ignored by Git.
 Do not commit a populated `.env` file. Production deployments should inject secrets instead.
@@ -363,7 +363,9 @@ selection rule has not been established. WALLABY-specific rules should remain a 
   production remote deployment behind TLS and an authenticating reverse proxy or MCP authorization
   layer. Do not expose it directly when staging, credentials, or downloads are enabled.
 - `CASDA_STATE_DB` may contain short-lived signed URLs needed to resume status/download workflows.
-  Protect that file with OS permissions and encrypted storage. In-memory state is the default.
+  The server rejects symlink/non-file targets and forces owner-only file permissions on POSIX;
+  deployments should additionally use an owner-controlled directory and encrypted storage.
+  In-memory state is the default.
 
 See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.
 

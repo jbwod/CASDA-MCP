@@ -29,6 +29,8 @@ checksums, and HTTP headers are treated as untrusted. Principal controls include
 - staging/download feature gates disabled by default;
 - download containment, no overwrite by default, temporary-file cleanup, length/checksum validation;
 - OPAL secret redaction and stderr-only structured logging;
+- origin-scoped OPAL authentication that is stripped from cross-origin redirects;
+- owner-only permissions for the optional SQLite file containing signed URLs;
 - structured client errors without stack traces;
 - loopback HTTP binding by default.
 

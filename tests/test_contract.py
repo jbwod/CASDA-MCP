@@ -20,6 +20,8 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
     product_tool = next(tool for tool in tools if tool.name == "casda_get_product")
     assert product_tool.inputSchema["required"] == ["product_id"]
     assert product_tool.outputSchema is not None
+    search_tool = next(tool for tool in tools if tool.name == "casda_search_products")
+    assert search_tool.inputSchema["properties"]["sort_order"]["enum"] == ["asc", "desc"]
     resources = await server.list_resource_templates()
     assert {str(resource.uriTemplate) for resource in resources} == {
         "casda://products/{product_id}",

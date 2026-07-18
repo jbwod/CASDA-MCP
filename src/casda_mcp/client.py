@@ -40,13 +40,16 @@ class CasdaClient:
             "User-Agent": settings.user_agent,
             "Accept": "application/json, text/csv, application/xml",
         }
-        auth: httpx.BasicAuth | None = None
+        self._auth: httpx.BasicAuth | None = None
         if settings.username is not None and settings.password is not None:
-            auth = httpx.BasicAuth(settings.username, settings.password.get_secret_value())
+            self._auth = httpx.BasicAuth(settings.username, settings.password.get_secret_value())
+        self._credential_origins = frozenset(
+            self._origin(url)
+            for url in (settings.login_url, settings.datalink_url, settings.soda_url)
+        )
         limits = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30)
         self.http = httpx.AsyncClient(
             headers=headers,
-            auth=auth,
             timeout=httpx.Timeout(settings.request_timeout_seconds),
             limits=limits,
             follow_redirects=False,
@@ -99,6 +102,7 @@ class CasdaClient:
             "GET",
             self.settings.login_url,
             safe_to_retry=True,
+            authenticated=True,
             correlation_id=correlation_id,
         )
 
@@ -111,7 +115,11 @@ class CasdaClient:
                 details={"url": sanitize_url(access_url)},
             )
         response = await self.request(
-            "GET", access_url, safe_to_retry=True, correlation_id=correlation_id
+            "GET",
+            access_url,
+            safe_to_retry=True,
+            authenticated=True,
+            correlation_id=correlation_id,
         )
         result = parse_datalink_access(response.content)
         self.validate_archive_url(result.service_url)
@@ -134,6 +142,7 @@ class CasdaClient:
             service_url,
             params=[("ID", token) for token in tokens],
             safe_to_retry=False,
+            authenticated=True,
             correlation_id=correlation_id,
         )
         job_url = str(response.url)
@@ -147,13 +156,18 @@ class CasdaClient:
             f"{job_url}/phase",
             data={"phase": "RUN"},
             safe_to_retry=False,
+            authenticated=True,
             correlation_id=correlation_id,
         )
 
     async def get_staging_status(self, job_url: str, *, correlation_id: str) -> UwsStatus:
         self.validate_archive_url(job_url)
         response = await self.request(
-            "GET", job_url, safe_to_retry=True, correlation_id=correlation_id
+            "GET",
+            job_url,
+            safe_to_retry=True,
+            authenticated=True,
+            correlation_id=correlation_id,
         )
         return parse_uws_status(response.content)
 
@@ -163,6 +177,7 @@ class CasdaClient:
         url: str,
         *,
         safe_to_retry: bool,
+        authenticated: bool = False,
         correlation_id: str,
         **kwargs: Any,
     ) -> httpx.Response:
@@ -172,7 +187,9 @@ class CasdaClient:
         for attempt in range(attempts):
             started = time.monotonic()
             try:
-                response = await self._request_following_safe_redirects(method, url, **kwargs)
+                response = await self._request_following_safe_redirects(
+                    method, url, authenticated=authenticated, **kwargs
+                )
                 latency_ms = round((time.monotonic() - started) * 1000, 2)
                 LOGGER.info(
                     "archive_request",
@@ -217,13 +234,30 @@ class CasdaClient:
         ) from last_error
 
     async def _request_following_safe_redirects(
-        self, method: str, url: str, **kwargs: Any
+        self, method: str, url: str, *, authenticated: bool, **kwargs: Any
     ) -> httpx.Response:
+        initial_origin = self._origin(url)
+        if authenticated:
+            if self._auth is None:
+                raise CasdaError(
+                    "AUTHENTICATION_REQUIRED",
+                    "This CASDA operation requires configured OPAL credentials.",
+                )
+            if initial_origin not in self._credential_origins:
+                raise CasdaError(
+                    "UNSAFE_AUTH_TARGET",
+                    "Credentials cannot be sent to this archive origin.",
+                    details={"url": sanitize_url(url)},
+                )
         current_method = method
         current_url = url
         current_kwargs = dict(kwargs)
+        current_kwargs.pop("auth", None)
         for _ in range(6):
-            response = await self.http.request(current_method, current_url, **current_kwargs)
+            request_kwargs = dict(current_kwargs)
+            if authenticated and self._origin(current_url) == initial_origin:
+                request_kwargs["auth"] = self._auth
+            response = await self.http.request(current_method, current_url, **request_kwargs)
             if not response.is_redirect:
                 return response
             location = response.headers.get("Location")
@@ -311,3 +345,8 @@ class CasdaClient:
     @staticmethod
     def _backoff(attempt: int) -> float:
         return float(min(0.5 * (2**attempt) + random.uniform(0, 0.25), 10.0))  # noqa: S311
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None]:
+        parsed = urlparse(url)
+        return parsed.scheme, parsed.hostname or "", parsed.port

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from datetime import datetime, timezone
 
 from casda_mcp.models import ReadyArtifact, StagingItem, StagingRequest
@@ -40,3 +42,27 @@ def test_sqlite_state_round_trips_idempotency_job_and_ready_url(tmp_path) -> Non
         assert restored_ready.download_url.endswith("signature=opaque")
     finally:
         second.close()
+
+
+def test_sqlite_state_file_is_created_with_private_permissions(tmp_path) -> None:
+    private_dir = tmp_path / "private"
+    path = private_dir / "casda-state.sqlite3"
+    previous_umask = os.umask(0)
+    try:
+        store = StateStore(path)
+        store.close()
+    finally:
+        os.umask(previous_umask)
+    if os.name == "posix":
+        assert stat.S_IMODE(private_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_sqlite_state_repairs_existing_file_permissions(tmp_path) -> None:
+    path = tmp_path / "casda-state.sqlite3"
+    path.touch(mode=0o644)
+    path.chmod(0o644)
+    store = StateStore(path)
+    store.close()
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600

@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from casda_mcp.provenance import redact
+from casda_mcp.provenance import REDACTED, redact, sanitize_url
+
+URL_IN_MESSAGE = re.compile(r"https?://[^\s\"'<>]+")
+SECRET_IN_MESSAGE = re.compile(
+    r"(?i)\b(authorization|password|token|secret|cookie|credential|signature)"
+    r"\s*[:=]\s*(?:(?:Basic|Bearer)\s+)?[^\s,;]+"
+)
+
+
+def sanitize_log_message(message: str) -> str:
+    """Remove URL credentials/query data and common inline secret fields."""
+
+    without_url_secrets = URL_IN_MESSAGE.sub(lambda match: sanitize_url(match.group(0)), message)
+    return SECRET_IN_MESSAGE.sub(lambda match: f"{match.group(1)}={REDACTED}", without_url_secrets)
 
 
 class JsonFormatter(logging.Formatter):
@@ -19,7 +33,7 @@ class JsonFormatter(logging.Formatter):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": sanitize_log_message(record.getMessage()),
         }
         fields = getattr(record, "fields", None)
         if isinstance(fields, dict):
@@ -40,6 +54,10 @@ def configure_logging(level: str = "INFO") -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level.upper())
+    # httpx/httpcore INFO messages contain the complete request URL. Even though the formatter
+    # sanitises arbitrary messages, suppressing routine transport logs avoids duplicate records.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 class Metrics:

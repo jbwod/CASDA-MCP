@@ -88,9 +88,15 @@ async def test_client_rejects_unexpected_datalink_path_before_network(
 
 
 @respx.mock
-async def test_non_idempotent_stage_creation_redirect_is_followed_without_reposting(
-    client: CasdaClient,
-) -> None:
+async def test_non_idempotent_stage_creation_redirect_is_followed_without_reposting() -> None:
+    client = CasdaClient(
+        Settings(
+            _env_file=None,
+            username="researcher@example.test",
+            password="top-secret",  # noqa: S106
+            max_retries=0,
+        )
+    )
     create = respx.post("https://casda.csiro.au/casda_data_access/data/async").mock(
         return_value=httpx.Response(
             303, headers={"Location": "/casda_data_access/data/async/job-1"}
@@ -110,3 +116,58 @@ async def test_non_idempotent_stage_creation_redirect_is_followed_without_repost
     assert job_url.endswith("/job-1")
     assert create.call_count == 1
     assert status.call_count == 1
+
+
+@respx.mock
+async def test_credentials_are_not_sent_to_pawsey_download_hosts() -> None:
+    client = CasdaClient(
+        Settings(
+            _env_file=None,
+            username="researcher@example.test",
+            password="top-secret",  # noqa: S106
+            max_retries=0,
+        )
+    )
+    route = respx.get("https://ingest.pawsey.org/archive/file.fits").mock(
+        return_value=httpx.Response(200, text="ok")
+    )
+    try:
+        await client.request(
+            "GET",
+            "https://ingest.pawsey.org/archive/file.fits",
+            safe_to_retry=True,
+            correlation_id="test",
+        )
+    finally:
+        await client.aclose()
+    assert "authorization" not in route.calls[0].request.headers
+
+
+@respx.mock
+async def test_authenticated_redirect_strips_credentials_on_origin_change() -> None:
+    client = CasdaClient(
+        Settings(
+            _env_file=None,
+            username="researcher@example.test",
+            password="top-secret",  # noqa: S106
+            max_retries=0,
+        )
+    )
+    start = respx.get("https://data.csiro.au/private").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://casda.csiro.au/final"})
+    )
+    final = respx.get("https://casda.csiro.au/final").mock(
+        return_value=httpx.Response(200, text="ok")
+    )
+    try:
+        await client.request(
+            "GET",
+            "https://data.csiro.au/private",
+            safe_to_retry=True,
+            authenticated=True,
+            correlation_id="test",
+        )
+    finally:
+        await client.aclose()
+    assert start.calls[0].request.headers["authorization"].startswith("Basic ")
+    assert "authorization" not in final.calls[0].request.headers

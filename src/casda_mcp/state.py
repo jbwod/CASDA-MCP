@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import threading
 from pathlib import Path
 from typing import Any, TypeVar
@@ -23,13 +25,35 @@ class StateStore:
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
         if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if path.parent.is_symlink() or not path.parent.is_dir():
+                raise ValueError("CASDA_STATE_DB parent must be a real directory")
+            self._prepare_private_database(path)
             self._connection = sqlite3.connect(path, check_same_thread=False)
             self._connection.execute(
                 "CREATE TABLE IF NOT EXISTS state (kind TEXT NOT NULL, key TEXT NOT NULL, "
                 "value_json TEXT NOT NULL, PRIMARY KEY(kind, key))"
             )
             self._connection.commit()
+
+    @staticmethod
+    def _prepare_private_database(path: Path) -> None:
+        """Create a regular SQLite file without group/other access."""
+
+        if path.is_symlink():
+            raise ValueError("CASDA_STATE_DB must not be a symbolic link")
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode):
+                raise ValueError("CASDA_STATE_DB must be a regular file")
+            if os.name == "posix":
+                os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
 
     def _put(self, kind: str, key: str, value: dict[str, Any]) -> None:
         with self._lock:

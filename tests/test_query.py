@@ -51,6 +51,10 @@ def test_builds_allowlisted_spatial_project_and_type_query(builder: QueryBuilder
         ),
         (SearchCriteria(product_types=["raw_adql"]), "Unsupported product type"),
         (SearchCriteria(sort_by="drop table"), "Unsupported sort field"),
+        (
+            SearchCriteria(sort_order="asc; drop table ivoa.obscore"),  # type: ignore[arg-type]
+            "Unsupported sort order",
+        ),
         (SearchCriteria(page=5, page_size=25), "result window"),
     ],
 )

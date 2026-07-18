@@ -254,6 +254,10 @@ class QueryBuilder:
                 raise ValidationError("Unsupported product type.", details={"unsupported": invalid})
         if criteria.sort_by not in SORT_FIELDS:
             raise ValidationError("Unsupported sort field.", details={"sort_by": criteria.sort_by})
+        if criteria.sort_order not in {"asc", "desc"}:
+            raise ValidationError(
+                "Unsupported sort order.", details={"sort_order": criteria.sort_order}
+            )
         if criteria.page < 1 or criteria.page_size < 1:
             raise ValidationError("page and page_size must be positive integers.")
         if (
