@@ -76,9 +76,27 @@ def test_uws_status_parses_phase_expiry_error_and_results() -> None:
     assert result.result_urls == ["https://data.csiro.au/file.fits"]
 
 
-def test_uws_missing_phase_is_unknown() -> None:
-    result = parse_uws_status(b"<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'/>")
-    assert result.phase == "UNKNOWN"
+def test_uws_missing_phase_and_unexpected_root_are_rejected() -> None:
+    with pytest.raises(CasdaError, match="missing UWS phase"):
+        parse_uws_status(b"<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'/>")
+    with pytest.raises(CasdaError, match="unexpected UWS document"):
+        parse_uws_status(b"<html><phase>COMPLETED</phase></html>")
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"obs_publisher_did": "cube-1", "s_ra": "not-a-number"},
+        {"obs_publisher_did": "cube-1", "s_ra": "nan"},
+        {"obs_publisher_did": "cube-1", "access_estsize": str(2**80)},
+        {"obs_publisher_did": "cube-1", "obs_release_date": "not-a-date"},
+        {"obs_publisher_did": "cube-1", "t_min": "1e300"},
+    ],
+)
+def test_product_parser_maps_invalid_archive_values_to_typed_errors(row) -> None:
+    with pytest.raises(CasdaError) as error:
+        product_from_row(row)
+    assert error.value.code == "MALFORMED_ARCHIVE_RESPONSE"
 
 
 def test_datalink_votable_extracts_authorised_async_service() -> None:

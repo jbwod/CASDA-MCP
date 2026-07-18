@@ -45,6 +45,9 @@ def test_builds_allowlisted_spatial_project_and_type_query(builder: QueryBuilder
         (SearchCriteria(ra_deg=0, dec_deg=-91, radius_deg=1), "dec_deg"),
         (SearchCriteria(ra_deg=0, dec_deg=0, radius_deg=6), "radius_deg"),
         (SearchCriteria(frequency_min_hz=2, frequency_max_hz=1), "must not exceed"),
+        (SearchCriteria(frequency_min_hz=float("nan")), "finite"),
+        (SearchCriteria(frequency_max_hz=float("inf")), "finite"),
+        (SearchCriteria(ra_deg=float("nan"), dec_deg=0, radius_deg=1), "finite"),
         (
             SearchCriteria(observation_start="2025-02-01", observation_end="2025-01-01"),
             "must not be after",

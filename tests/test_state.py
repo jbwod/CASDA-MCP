@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from casda_mcp.models import ReadyArtifact, StagingItem, StagingRequest
 from casda_mcp.state import StateStore
@@ -66,3 +66,17 @@ def test_sqlite_state_repairs_existing_file_permissions(tmp_path) -> None:
     store.close()
     if os.name == "posix":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_expired_ready_artifacts_are_pruned() -> None:
+    store = StateStore()
+    store.put_ready(
+        ReadyArtifact(
+            product_id="cube-1",
+            request_id="job-1",
+            download_url="https://data.csiro.au/file.fits",
+            confirmed_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        )
+    )
+    assert store.get_ready("cube-1") is None

@@ -290,7 +290,8 @@ Creates and retains a schema-versioned JSON manifest in server state:
 The manifest includes a deterministic SHA-256 identifier, creation time, full typed product
 metadata, filenames, estimated file sizes, available checksums, SBIDs, project codes, types, spatial
 and spectral metadata, access state, known originating search criteria, provenance, and server
-version. Signed or query-bearing download URLs are omitted even when URL inclusion is requested.
+version. Archive artifact URLs are never persisted in manifests because opaque paths may be
+short-lived bearer credentials even when they contain no query string.
 
 ## Resources
 

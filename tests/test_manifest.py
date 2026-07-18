@@ -93,11 +93,11 @@ async def test_manifest_omits_signed_url_even_when_requested(
     )
     assert response.manifest is not None
     assert response.manifest.products[0].download_url is None
-    assert "signed URL was omitted" in response.manifest.warnings[0]
+    assert "artifact URL was omitted" in response.manifest.warnings[0]
     assert "secret" not in response.manifest.model_dump_json()
 
 
-async def test_manifest_includes_queryless_confirmed_url_when_requested(
+async def test_manifest_omits_queryless_confirmed_url_when_requested(
     manifest_service: CasdaService,
 ) -> None:
     manifest_service.state.put_ready(
@@ -115,7 +115,8 @@ async def test_manifest_includes_queryless_confirmed_url_when_requested(
         include_download_urls=True,
     )
     assert response.manifest is not None
-    assert response.manifest.products[0].download_url == "https://data.csiro.au/file.fits"
+    assert response.manifest.products[0].download_url is None
+    assert "bearer credentials" in response.manifest.warnings[0]
 
 
 async def test_manifest_limits_and_labels_are_validated(manifest_service: CasdaService) -> None:
