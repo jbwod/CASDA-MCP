@@ -279,6 +279,106 @@ def _plain(value: Any) -> str | None:
     return str(value)
 
 
+def parse_votable_rows(content: bytes) -> list[dict[str, str | None]]:
+    """Parse a VOTable into stringified row dictionaries.
+
+    Protocol-specific typed models should be built from these rows so SIA/SCS/SSA
+    fields are preserved rather than coerced into ObsCore Product shapes.
+    """
+
+    stripped = content.lstrip()
+    if not stripped:
+        raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an empty VOTable.")
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned malformed VOTable XML."
+        ) from exc
+    for info in root.iter():
+        if _local_name(info.tag) != "INFO":
+            continue
+        name = (info.attrib.get("name") or "").upper()
+        value = (info.attrib.get("value") or "").upper()
+        if name in {"QUERY_STATUS", "ERROR"} and value == "ERROR":
+            message = (info.text or info.attrib.get("value") or "").strip()
+            raise CasdaError(
+                "ARCHIVE_QUERY_ERROR",
+                "CASDA rejected the discovery query.",
+                details={"archive_message": message[:500]},
+            )
+        if name == "ERROR" and value and value != "OK":
+            raise CasdaError(
+                "ARCHIVE_QUERY_ERROR",
+                "CASDA rejected the discovery query.",
+                details={"archive_message": value[:500]},
+            )
+    try:
+        votable = parse_votable(io.BytesIO(content), verify="warn")
+    except Exception as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an invalid VOTable."
+        ) from exc
+    rows: list[dict[str, str | None]] = []
+    for resource in votable.resources:
+        if not resource.tables:
+            continue
+        table = resource.tables[0]
+        names = [field.name for field in table.fields]
+        if not names:
+            continue
+        array = table.array
+        if array is None:
+            continue
+        for result in array:
+            row: dict[str, str | None] = {}
+            for name in names:
+                row[name] = _plain(result[name])
+            rows.append(row)
+    return rows
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_sia1_surveys(content: bytes) -> list[dict[str, str | None]]:
+    """Parse the CASDA SIA1 surveys inventory extension document."""
+
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned invalid SIA surveys XML."
+        ) from exc
+    if _local_name(root.tag) != "Surveys":
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an unexpected SIA surveys document.",
+        )
+    surveys: list[dict[str, str | None]] = []
+    for survey in root:
+        if _local_name(survey.tag) != "Survey":
+            continue
+        fields = {_local_name(child.tag): ((child.text or "").strip() or None) for child in survey}
+        code = fields.get("Code")
+        if not code:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned a survey entry without a Code.",
+            )
+        surveys.append(
+            {
+                "code": code,
+                "name": fields.get("Name"),
+                "description": fields.get("Description"),
+                "group": fields.get("Group"),
+                "endpoint": fields.get("Endpoint"),
+            }
+        )
+    return surveys
+
+
 def parse_datalink_access(content: bytes, service_name: str = "async_service") -> DatalinkAccess:
     try:
         votable = parse_votable(io.BytesIO(content), verify="warn")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,7 @@ from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
     AbortTapJobResponse,
     BuildAdqlResponse,
+    CatalogueRow,
     ColumnInfo,
     CreateManifestResponse,
     DeleteTapJobResponse,
@@ -29,8 +31,11 @@ from casda_mcp.models import (
     GetArchiveStatusResponse,
     GetObservationResponse,
     GetProductResponse,
+    ImageRow,
     ListCapabilitiesResponse,
+    ListCataloguesResponse,
     ListForeignKeysResponse,
+    ListImageSurveysResponse,
     ListSchemasResponse,
     ListTablesResponse,
     Manifest,
@@ -39,12 +44,17 @@ from casda_mcp.models import (
     Product,
     ReadyArtifact,
     SchemaInfo,
+    SearchCatalogueResponse,
+    SearchImagesResponse,
     SearchProductsResponse,
+    SearchSpectraResponse,
+    SpectrumRow,
     StageProductsResponse,
     StagingItem,
     StagingRequest,
     StagingStatusResponse,
     SubmitTapQueryResponse,
+    SurveyInfo,
     TableInfo,
     TapJobRecord,
     TapJobResultsResponse,
@@ -61,9 +71,14 @@ from casda_mcp.query import (
     SearchCriteria,
     normalize_product_id,
     normalize_product_ids,
+    validate_catalogue_short_name,
+    validate_dec_deg,
     validate_idempotency_key,
+    validate_ra_deg,
+    validate_radius_deg,
     validate_schema_name,
     validate_table_name,
+    validate_vo_param,
 )
 from casda_mcp.state import StateStore
 
@@ -330,6 +345,497 @@ class CasdaService:
                 cached=cached,
                 correlation_id=correlation_id,
             ),
+        )
+
+    async def search_images(
+        self,
+        *,
+        pos_type: str,
+        ra_deg: float | None = None,
+        dec_deg: float | None = None,
+        radius_deg: float | None = None,
+        ra_min_deg: float | None = None,
+        ra_max_deg: float | None = None,
+        dec_min_deg: float | None = None,
+        dec_max_deg: float | None = None,
+        polygon: list[tuple[float, float]] | None = None,
+        band: str | None = None,
+        time: str | None = None,
+        pol: str | None = None,
+        max_records: int | None = None,
+    ) -> SearchImagesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        max_records = self._bound_max_records(max_records)
+        params = self._build_sia2_params(
+            pos_type=pos_type,
+            ra_deg=ra_deg,
+            dec_deg=dec_deg,
+            radius_deg=radius_deg,
+            ra_min_deg=ra_min_deg,
+            ra_max_deg=ra_max_deg,
+            dec_min_deg=dec_min_deg,
+            dec_max_deg=dec_max_deg,
+            polygon=polygon,
+            band=band,
+            time=time,
+            pol=pol,
+            max_records=max_records,
+        )
+        rows = await self.client.sia2_query(params, correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="SIA2 query succeeded")
+        images = [self._image_from_row(row) for row in rows[:max_records]]
+        return SearchImagesResponse(
+            images=images,
+            max_records=max_records,
+            returned=len(images),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.sia2_url,
+                parameters=dict(params),
+                result_count=len(images),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_image_surveys(self) -> ListImageSurveysResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        rows = await self.client.sia1_surveys(correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="SIA1 surveys inventory succeeded")
+        surveys = [
+            SurveyInfo(
+                code=code,
+                name=row.get("name"),
+                description=row.get("description"),
+                group=row.get("group"),
+                endpoint=row.get("endpoint"),
+            )
+            for row in rows
+            if (code := row.get("code"))
+        ]
+        return ListImageSurveysResponse(
+            surveys=surveys,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.sia1_surveys_url,
+                parameters={},
+                result_count=len(surveys),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def search_survey_images(
+        self,
+        *,
+        survey: str,
+        ra_deg: float,
+        dec_deg: float,
+        size_deg: float,
+        max_records: int | None = None,
+    ) -> SearchImagesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        max_records = self._bound_max_records(max_records)
+        survey = validate_vo_param(survey, field="survey")
+        ra_deg = validate_ra_deg(ra_deg)
+        dec_deg = validate_dec_deg(dec_deg)
+        size_deg = validate_radius_deg(
+            size_deg, maximum=self.settings.max_cone_radius_deg, field="size_deg"
+        )
+        params = [
+            ("POS", f"{ra_deg:.12g},{dec_deg:.12g}"),
+            ("SIZE", f"{size_deg:.12g}"),
+            ("SURVEY", survey),
+            ("MAXREC", str(max_records)),
+        ]
+        rows = await self.client.sia1_query(params, correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="SIA1 query succeeded")
+        images = [self._image_from_row(row) for row in rows[:max_records]]
+        return SearchImagesResponse(
+            images=images,
+            max_records=max_records,
+            returned=len(images),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.sia1_url,
+                parameters=dict(params),
+                result_count=len(images),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_catalogues(
+        self,
+        *,
+        cursor: str | None = None,
+        page_size: int = 25,
+    ) -> ListCataloguesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        page_size = self._validate_page_size(page_size)
+        parameters = {"page_size": page_size}
+        bound_hash = query_hash(parameters)
+        page = 1
+        if cursor:
+            offset, page_size = decode_cursor(cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+        else:
+            offset = 0
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_list_catalogues(fetch_count=fetch_count),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        catalogues = [self._catalogue_inventory_from_row(row) for row in rows]
+        end = min(offset + page_size, self.settings.max_results, len(catalogues))
+        page_catalogues = catalogues[offset:end]
+        has_more = len(catalogues) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
+        return ListCataloguesResponse(
+            catalogues=page_catalogues,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                returned=len(page_catalogues),
+                has_more=has_more,
+                max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=offset,
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters=parameters,
+                result_count=len(page_catalogues),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def search_catalogue(
+        self,
+        *,
+        catalogue: str,
+        ra_deg: float,
+        dec_deg: float,
+        radius_deg: float,
+        max_records: int | None = None,
+    ) -> SearchCatalogueResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        catalogue = validate_catalogue_short_name(catalogue)
+        ra_deg = validate_ra_deg(ra_deg)
+        dec_deg = validate_dec_deg(dec_deg)
+        radius_deg = validate_radius_deg(
+            radius_deg, maximum=self.settings.max_cone_radius_deg, field="radius_deg"
+        )
+        max_records = self._bound_max_records(max_records)
+        params = [
+            ("RA", f"{ra_deg:.12g}"),
+            ("DEC", f"{dec_deg:.12g}"),
+            ("SR", f"{radius_deg:.12g}"),
+            ("MAXREC", str(max_records)),
+        ]
+        endpoint = f"{self.settings.scs_base_url}/{catalogue}"
+        rows = await self.client.scs_query(catalogue, params, correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="SCS query succeeded")
+        catalogue_rows = [self._catalogue_row_from_scs(row) for row in rows[:max_records]]
+        return SearchCatalogueResponse(
+            catalogue=catalogue,
+            rows=catalogue_rows,
+            max_records=max_records,
+            returned=len(catalogue_rows),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=endpoint,
+                parameters={"catalogue": catalogue, **dict(params)},
+                result_count=len(catalogue_rows),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def search_spectra(
+        self,
+        *,
+        ra_deg: float,
+        dec_deg: float,
+        size_deg: float,
+        band: str | None = None,
+        time: str | None = None,
+        max_records: int | None = None,
+    ) -> SearchSpectraResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        ra_deg = validate_ra_deg(ra_deg)
+        dec_deg = validate_dec_deg(dec_deg)
+        size_deg = validate_radius_deg(
+            size_deg, maximum=self.settings.max_cone_radius_deg, field="size_deg"
+        )
+        max_records = self._bound_max_records(max_records)
+        params: list[tuple[str, str]] = [
+            ("REQUEST", "queryData"),
+            ("POS", f"{ra_deg:.12g},{dec_deg:.12g}"),
+            ("SIZE", f"{size_deg:.12g}"),
+            ("MAXREC", str(max_records)),
+        ]
+        if band is not None:
+            params.append(("BAND", validate_vo_param(band, field="band")))
+        if time is not None:
+            params.append(("TIME", validate_vo_param(time, field="time")))
+        rows = await self.client.ssa_query(params, correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="SSA query succeeded")
+        spectra = [self._spectrum_from_row(row) for row in rows[:max_records]]
+        return SearchSpectraResponse(
+            spectra=spectra,
+            max_records=max_records,
+            returned=len(spectra),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.ssa_url,
+                parameters=dict(params),
+                result_count=len(spectra),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _bound_max_records(self, max_records: int | None) -> int:
+        if max_records is None:
+            return self.settings.max_results
+        if max_records < 1:
+            raise ValidationError("max_records must be a positive integer.")
+        return min(max_records, self.settings.max_results, self.settings.max_tap_rows)
+
+    def _build_sia2_params(
+        self,
+        *,
+        pos_type: str,
+        ra_deg: float | None,
+        dec_deg: float | None,
+        radius_deg: float | None,
+        ra_min_deg: float | None,
+        ra_max_deg: float | None,
+        dec_min_deg: float | None,
+        dec_max_deg: float | None,
+        polygon: list[tuple[float, float]] | None,
+        band: str | None,
+        time: str | None,
+        pol: str | None,
+        max_records: int,
+    ) -> list[tuple[str, str]]:
+        normalized = pos_type.strip().upper()
+        if normalized == "CIRCLE":
+            if ra_deg is None or dec_deg is None or radius_deg is None:
+                raise ValidationError("CIRCLE position requires ra_deg, dec_deg, and radius_deg.")
+            ra_deg = validate_ra_deg(ra_deg)
+            dec_deg = validate_dec_deg(dec_deg)
+            radius_deg = validate_radius_deg(
+                radius_deg, maximum=self.settings.max_cone_radius_deg, field="radius_deg"
+            )
+            pos = f"CIRCLE {ra_deg:.12g} {dec_deg:.12g} {radius_deg:.12g}"
+        elif normalized == "RANGE":
+            values = (ra_min_deg, ra_max_deg, dec_min_deg, dec_max_deg)
+            if any(value is None for value in values):
+                raise ValidationError(
+                    "RANGE position requires ra_min_deg, ra_max_deg, dec_min_deg, and dec_max_deg."
+                )
+            assert ra_min_deg is not None and ra_max_deg is not None
+            assert dec_min_deg is not None and dec_max_deg is not None
+            for field_name, value in (
+                ("ra_min_deg", ra_min_deg),
+                ("ra_max_deg", ra_max_deg),
+            ):
+                if not math.isfinite(value) or not 0 <= value < 360:
+                    raise ValidationError(f"{field_name} must be finite and in [0, 360).")
+            for field_name, value in (
+                ("dec_min_deg", dec_min_deg),
+                ("dec_max_deg", dec_max_deg),
+            ):
+                if not math.isfinite(value) or not -90 <= value <= 90:
+                    raise ValidationError(f"{field_name} must be finite and in [-90, 90].")
+            if ra_min_deg > ra_max_deg or dec_min_deg > dec_max_deg:
+                raise ValidationError("RANGE bounds must be ordered min <= max.")
+            pos = f"RANGE {ra_min_deg:.12g} {ra_max_deg:.12g} {dec_min_deg:.12g} {dec_max_deg:.12g}"
+        elif normalized == "POLYGON":
+            if not polygon or len(polygon) < 3:
+                raise ValidationError("POLYGON position requires at least three vertices.")
+            if len(polygon) > 64:
+                raise ValidationError("POLYGON position accepts at most 64 vertices.")
+            parts: list[str] = []
+            for index, (vertex_ra, vertex_dec) in enumerate(polygon):
+                try:
+                    parts.append(f"{validate_ra_deg(vertex_ra):.12g}")
+                    parts.append(f"{validate_dec_deg(vertex_dec):.12g}")
+                except ValidationError as exc:
+                    raise ValidationError(
+                        f"Invalid POLYGON vertex at index {index}.",
+                        details=exc.details,
+                    ) from exc
+            pos = "POLYGON " + " ".join(parts)
+        else:
+            raise ValidationError(
+                "pos_type must be CIRCLE, RANGE, or POLYGON.",
+                details={"pos_type": pos_type},
+            )
+        params: list[tuple[str, str]] = [("POS", pos), ("MAXREC", str(max_records))]
+        if band is not None:
+            params.append(("BAND", validate_vo_param(band, field="band")))
+        if time is not None:
+            params.append(("TIME", validate_vo_param(time, field="time")))
+        if pol is not None:
+            params.append(("POL", validate_vo_param(pol, field="pol")))
+        return params
+
+    @staticmethod
+    def _optional_float(row: dict[str, str | None], key: str) -> float | None:
+        value = row.get(key)
+        if value is None:
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @staticmethod
+    def _optional_int(row: dict[str, str | None], key: str) -> int | None:
+        value = row.get(key)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _image_from_row(row: dict[str, str | None]) -> ImageRow:
+        known = {
+            "obs_publisher_did",
+            "access_url",
+            "access_format",
+            "dataproduct_type",
+            "obs_collection",
+            "obs_id",
+            "target_name",
+            "survey",
+            "image_title",
+            "s_ra",
+            "s_dec",
+            "s_fov",
+            "distance",
+        }
+        extras = {key: value for key, value in row.items() if key not in known}
+        return ImageRow(
+            obs_publisher_did=row.get("obs_publisher_did"),
+            access_url=row.get("access_url"),
+            access_format=row.get("access_format"),
+            dataproduct_type=row.get("dataproduct_type"),
+            obs_collection=row.get("obs_collection"),
+            obs_id=row.get("obs_id"),
+            target_name=row.get("target_name"),
+            survey=row.get("survey"),
+            image_title=row.get("image_title"),
+            s_ra=CasdaService._optional_float(row, "s_ra"),
+            s_dec=CasdaService._optional_float(row, "s_dec"),
+            s_fov=CasdaService._optional_float(row, "s_fov"),
+            distance=CasdaService._optional_float(row, "distance"),
+            **extras,
+        )
+
+    @staticmethod
+    def _catalogue_inventory_from_row(row: dict[str, str | None]) -> CatalogueRow:
+        known = {
+            "id",
+            "filename",
+            "format",
+            "observation_id",
+            "project_id",
+            "image_id",
+            "freq_ref",
+            "time_obs",
+            "time_obs_mjd",
+            "quality_level",
+            "released_date",
+            "name",
+            "ra",
+            "dec",
+        }
+        extras = {key: value for key, value in row.items() if key not in known}
+        return CatalogueRow(
+            id=CasdaService._optional_int(row, "id"),
+            filename=row.get("filename"),
+            format=row.get("format"),
+            observation_id=CasdaService._optional_int(row, "observation_id"),
+            project_id=CasdaService._optional_int(row, "project_id"),
+            image_id=CasdaService._optional_int(row, "image_id"),
+            freq_ref=CasdaService._optional_float(row, "freq_ref"),
+            time_obs=row.get("time_obs"),
+            time_obs_mjd=CasdaService._optional_float(row, "time_obs_mjd"),
+            quality_level=row.get("quality_level"),
+            released_date=row.get("released_date"),
+            **extras,
+        )
+
+    @staticmethod
+    def _catalogue_row_from_scs(row: dict[str, str | None]) -> CatalogueRow:
+        known = {
+            "id",
+            "filename",
+            "format",
+            "observation_id",
+            "project_id",
+            "image_id",
+            "freq_ref",
+            "time_obs",
+            "time_obs_mjd",
+            "quality_level",
+            "released_date",
+            "name",
+            "ra",
+            "dec",
+        }
+        extras = {key: value for key, value in row.items() if key not in known}
+        return CatalogueRow(
+            id=CasdaService._optional_int(row, "id"),
+            name=row.get("name"),
+            ra=CasdaService._optional_float(row, "ra"),
+            dec=CasdaService._optional_float(row, "dec"),
+            **extras,
+        )
+
+    @staticmethod
+    def _spectrum_from_row(row: dict[str, str | None]) -> SpectrumRow:
+        known = {
+            "obs_publisher_id",
+            "title",
+            "access_url",
+            "access_format",
+            "access_estsize",
+            "spectrum_type",
+            "obs_collection",
+            "s_ra",
+            "s_dec",
+            "num_chan",
+        }
+        extras = {key: value for key, value in row.items() if key not in known}
+        return SpectrumRow(
+            obs_publisher_id=row.get("obs_publisher_id"),
+            title=row.get("title"),
+            access_url=row.get("access_url"),
+            access_format=row.get("access_format"),
+            access_estsize=CasdaService._optional_int(row, "access_estsize"),
+            spectrum_type=row.get("spectrum_type"),
+            obs_collection=row.get("obs_collection"),
+            s_ra=CasdaService._optional_float(row, "s_ra"),
+            s_dec=CasdaService._optional_float(row, "s_dec"),
+            num_chan=CasdaService._optional_int(row, "num_chan"),
+            **extras,
         )
 
     def _validate_page_size(self, page_size: int) -> int:

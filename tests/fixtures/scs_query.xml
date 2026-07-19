@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE version="1.3" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE name="CASDA SCS Result" type="results">
+<INFO name="QUERY_STATUS" value="OK">Successful query</INFO>
+<TABLE name="results">
+<FIELD name="id" datatype="long"/>
+<FIELD name="name" datatype="char" arraysize="*"/>
+<FIELD name="ra" datatype="double" unit="deg"/>
+<FIELD name="dec" datatype="double" unit="deg"/>
+<FIELD name="total_flux" datatype="double" unit="mJy"/>
+<DATA><TABLEDATA>
+<TR><TD>1622000</TD><TD>RACS-MID1 J123334.7-600330</TD><TD>188.3945</TD><TD>-60.0582</TD><TD>2.3048</TD></TR>
+</TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>

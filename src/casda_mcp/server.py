@@ -29,10 +29,15 @@ from casda_mcp.models import (
     GetObservationResponse,
     GetProductResponse,
     ListCapabilitiesResponse,
+    ListCataloguesResponse,
     ListForeignKeysResponse,
+    ListImageSurveysResponse,
     ListSchemasResponse,
     ListTablesResponse,
+    SearchCatalogueResponse,
+    SearchImagesResponse,
     SearchProductsResponse,
+    SearchSpectraResponse,
     StageProductsResponse,
     StagingStatusResponse,
     SubmitTapQueryResponse,
@@ -382,6 +387,214 @@ def create_mcp_server(
         """List TAP_SCHEMA foreign keys that originate from the requested table."""
         try:
             return await service.list_foreign_keys(schema_name, table_name)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Search CASDA images", annotations=_READ_ONLY)
+    async def casda_search_images(
+        pos_type: Annotated[
+            Literal["CIRCLE", "RANGE", "POLYGON"],
+            Field(description="SIA 2 POS shape: CIRCLE, RANGE, or POLYGON."),
+        ],
+        ra_deg: Annotated[
+            float | None, Field(description="ICRS RA in degrees for CIRCLE searches.")
+        ] = None,
+        dec_deg: Annotated[
+            float | None, Field(description="ICRS Dec in degrees for CIRCLE searches.")
+        ] = None,
+        radius_deg: Annotated[
+            float | None, Field(description="CIRCLE radius in degrees; server-bounded.")
+        ] = None,
+        ra_min_deg: Annotated[
+            float | None, Field(description="RANGE minimum RA in degrees.")
+        ] = None,
+        ra_max_deg: Annotated[
+            float | None, Field(description="RANGE maximum RA in degrees.")
+        ] = None,
+        dec_min_deg: Annotated[
+            float | None, Field(description="RANGE minimum Dec in degrees.")
+        ] = None,
+        dec_max_deg: Annotated[
+            float | None, Field(description="RANGE maximum Dec in degrees.")
+        ] = None,
+        polygon: Annotated[
+            list[list[float]] | None,
+            Field(
+                description="POLYGON vertices as [[ra, dec], ...] with at least three points.",
+                max_length=64,
+            ),
+        ] = None,
+        band: Annotated[
+            str | None, Field(description="Optional SIA 2 BAND interval in metres.")
+        ] = None,
+        time: Annotated[str | None, Field(description="Optional SIA 2 TIME interval.")] = None,
+        pol: Annotated[
+            str | None, Field(description="Optional SIA 2 POL state filter such as I or IQU.")
+        ] = None,
+        max_records: Annotated[
+            int | None,
+            Field(description="Maximum rows to return; bounded by server configuration.", ge=1),
+        ] = None,
+    ) -> SearchImagesResponse:
+        """Discover images and cubes with the CASDA SIA 2 interface."""
+        try:
+            polygon_vertices: list[tuple[float, float]] | None = None
+            if polygon is not None:
+                polygon_vertices = []
+                for vertex in polygon:
+                    if len(vertex) != 2:
+                        raise CasdaError(
+                            "VALIDATION_ERROR",
+                            "Each POLYGON vertex must be [ra_deg, dec_deg].",
+                        )
+                    polygon_vertices.append((vertex[0], vertex[1]))
+            return await service.search_images(
+                pos_type=pos_type,
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                radius_deg=radius_deg,
+                ra_min_deg=ra_min_deg,
+                ra_max_deg=ra_max_deg,
+                dec_min_deg=dec_min_deg,
+                dec_max_deg=dec_max_deg,
+                polygon=polygon_vertices,
+                band=band,
+                time=time,
+                pol=pol,
+                max_records=max_records,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA image surveys", annotations=_READ_ONLY)
+    async def casda_list_image_surveys() -> ListImageSurveysResponse:
+        """List CASDA SIA 1 survey inventory entries."""
+        try:
+            return await service.list_image_surveys()
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Search CASDA survey images", annotations=_READ_ONLY)
+    async def casda_search_survey_images(
+        survey: Annotated[
+            str, Field(description="Survey code from casda_list_image_surveys, such as RACS-Low.")
+        ],
+        ra_deg: Annotated[
+            float, Field(description="ICRS right ascension in degrees, in [0, 360).")
+        ],
+        dec_deg: Annotated[float, Field(description="ICRS declination in degrees, in [-90, 90].")],
+        size_deg: Annotated[
+            float, Field(description="SIAP1 SIZE search box in degrees; server-bounded.", gt=0)
+        ],
+        max_records: Annotated[
+            int | None,
+            Field(description="Maximum rows to return; bounded by server configuration.", ge=1),
+        ] = None,
+    ) -> SearchImagesResponse:
+        """Discover survey images with the CASDA SIA 1 interface."""
+        try:
+            return await service.search_survey_images(
+                survey=survey,
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                size_deg=size_deg,
+                max_records=max_records,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA catalogues", annotations=_READ_ONLY)
+    async def casda_list_catalogues(
+        page_size: Annotated[
+            int,
+            Field(description="Number of catalogue products to return; server-bounded.", ge=1),
+        ] = 25,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque next-page cursor from a previous catalogue inventory."),
+        ] = None,
+    ) -> ListCataloguesResponse:
+        """List casda.catalogue product rows with stable cursor pagination."""
+        try:
+            return await service.list_catalogues(cursor=cursor, page_size=page_size)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Search CASDA catalogue", annotations=_READ_ONLY)
+    async def casda_search_catalogue(
+        catalogue: Annotated[
+            str,
+            Field(
+                description=(
+                    "SCS catalogue short name matching "
+                    "^[A-Za-z][A-Za-z0-9._-]{0,63}$, such as racs_mid_sources_v01."
+                )
+            ),
+        ],
+        ra_deg: Annotated[
+            float, Field(description="ICRS right ascension in degrees, in [0, 360).")
+        ],
+        dec_deg: Annotated[float, Field(description="ICRS declination in degrees, in [-90, 90].")],
+        radius_deg: Annotated[
+            float, Field(description="Cone search radius in degrees; server-bounded.", gt=0)
+        ],
+        max_records: Annotated[
+            int | None,
+            Field(description="Maximum rows to return; bounded by server configuration.", ge=1),
+        ] = None,
+    ) -> SearchCatalogueResponse:
+        """Run a Simple Cone Search against one CASDA catalogue short-name endpoint."""
+        try:
+            return await service.search_catalogue(
+                catalogue=catalogue,
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                radius_deg=radius_deg,
+                max_records=max_records,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Search CASDA spectra", annotations=_READ_ONLY)
+    async def casda_search_spectra(
+        ra_deg: Annotated[
+            float, Field(description="ICRS right ascension in degrees, in [0, 360).")
+        ],
+        dec_deg: Annotated[float, Field(description="ICRS declination in degrees, in [-90, 90].")],
+        size_deg: Annotated[
+            float, Field(description="SSA SIZE search radius in degrees; server-bounded.", gt=0)
+        ],
+        band: Annotated[
+            str | None, Field(description="Optional SSA BAND interval in metres.")
+        ] = None,
+        time: Annotated[str | None, Field(description="Optional SSA TIME interval.")] = None,
+        max_records: Annotated[
+            int | None,
+            Field(description="Maximum rows to return; bounded by server configuration.", ge=1),
+        ] = None,
+    ) -> SearchSpectraResponse:
+        """Discover spectra with the CASDA SSA interface."""
+        try:
+            return await service.search_spectra(
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                size_deg=size_deg,
+                band=band,
+                time=time,
+                max_records=max_records,
+            )
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:

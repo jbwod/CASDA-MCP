@@ -411,3 +411,109 @@ class DeleteTapJobResponse(BaseModel):
     deleted: bool = True
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
+
+
+class SurveyInfo(BaseModel):
+    """One CASDA SIA1 survey inventory entry."""
+
+    code: str
+    name: str | None = None
+    description: str | None = None
+    group: str | None = None
+    endpoint: str | None = None
+
+
+class ImageRow(BaseModel):
+    """Protocol-specific image/cube discovery row from SIA 1 or SIA 2."""
+
+    model_config = ConfigDict(extra="allow")
+
+    obs_publisher_did: str | None = None
+    access_url: str | None = None
+    access_format: str | None = None
+    dataproduct_type: str | None = None
+    obs_collection: str | None = None
+    obs_id: str | None = None
+    target_name: str | None = None
+    survey: str | None = None
+    image_title: str | None = None
+    s_ra: float | None = None
+    s_dec: float | None = None
+    s_fov: float | None = None
+    distance: float | None = None
+
+
+class CatalogueRow(BaseModel):
+    """Catalogue inventory row (casda.catalogue) or SCS science row."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: int | None = None
+    filename: str | None = None
+    format: str | None = None
+    observation_id: int | None = None
+    project_id: int | None = None
+    image_id: int | None = None
+    freq_ref: float | None = None
+    time_obs: str | None = None
+    time_obs_mjd: float | None = None
+    quality_level: str | None = None
+    released_date: str | None = None
+    name: str | None = None
+    ra: float | None = None
+    dec: float | None = None
+
+
+class SpectrumRow(BaseModel):
+    """Protocol-specific spectrum discovery row from SSA."""
+
+    model_config = ConfigDict(extra="allow")
+
+    obs_publisher_id: str | None = None
+    title: str | None = None
+    access_url: str | None = None
+    access_format: str | None = None
+    access_estsize: int | None = None
+    spectrum_type: str | None = None
+    obs_collection: str | None = None
+    s_ra: float | None = None
+    s_dec: float | None = None
+    num_chan: int | None = None
+
+
+class SearchImagesResponse(BaseModel):
+    images: list[ImageRow] = Field(default_factory=list)
+    max_records: int
+    returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListImageSurveysResponse(BaseModel):
+    surveys: list[SurveyInfo] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListCataloguesResponse(BaseModel):
+    catalogues: list[CatalogueRow] = Field(default_factory=list)
+    pagination: Pagination | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class SearchCatalogueResponse(BaseModel):
+    catalogue: str
+    rows: list[CatalogueRow] = Field(default_factory=list)
+    max_records: int
+    returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class SearchSpectraResponse(BaseModel):
+    spectra: list[SpectrumRow] = Field(default_factory=list)
+    max_records: int
+    returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None

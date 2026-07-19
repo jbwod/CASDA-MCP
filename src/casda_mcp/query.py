@@ -15,6 +15,8 @@ PROJECT_CODE_RE = re.compile(r"^[A-Z]{2,4}[0-9]{2,6}$")
 TEXT_RE = re.compile(r"^[\w .+:/()'-]{1,160}$", re.UNICODE)
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CATALOGUE_SHORT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+VO_PARAM_RE = re.compile(r"^[\w .:+/()',-]{1,256}$", re.UNICODE)
 
 SORT_FIELDS = {
     "product_id": "o.obs_publisher_did",
@@ -94,6 +96,47 @@ def validate_table_name(value: str) -> str:
             details={"table_name": value},
         )
     return normalized
+
+
+def validate_catalogue_short_name(value: str) -> str:
+    """Validate an SCS catalogue short name before URL composition."""
+
+    normalized = value.strip()
+    if not CATALOGUE_SHORT_NAME_RE.fullmatch(normalized):
+        raise ValidationError(
+            "catalogue must match ^[A-Za-z][A-Za-z0-9._-]{0,63}$.",
+            details={"catalogue": value},
+        )
+    return normalized
+
+
+def validate_vo_param(value: str, *, field: str) -> str:
+    """Validate a free-form VO protocol parameter such as BAND, TIME, or POL."""
+
+    if any(ord(character) < 32 for character in value):
+        raise ValidationError(f"Invalid {field}; control characters are not allowed.")
+    normalized = value.strip()
+    if not VO_PARAM_RE.fullmatch(normalized):
+        raise ValidationError(f"Invalid {field}.", details={"field": field})
+    return normalized
+
+
+def validate_ra_deg(value: float) -> float:
+    if not math.isfinite(value) or not 0 <= value < 360:
+        raise ValidationError("ra_deg must be finite and in the range [0, 360).")
+    return value
+
+
+def validate_dec_deg(value: float) -> float:
+    if not math.isfinite(value) or not -90 <= value <= 90:
+        raise ValidationError("dec_deg must be finite and in the range [-90, 90].")
+    return value
+
+
+def validate_radius_deg(value: float, *, maximum: float, field: str = "radius_deg") -> float:
+    if not math.isfinite(value) or not 0 < value <= maximum:
+        raise ValidationError(f"{field} must be greater than zero and no more than {maximum}.")
+    return value
 
 
 def qualified_table_name(schema_name: str, table_name: str) -> str:
@@ -330,6 +373,15 @@ class QueryBuilder:
             "FROM TAP_SCHEMA.keys AS k JOIN TAP_SCHEMA.key_columns AS kc "
             f"ON k.key_id = kc.key_id WHERE k.from_table = '{qualified}' "
             "ORDER BY k.key_id ASC, kc.from_column ASC"
+        )
+
+    def build_list_catalogues(self, *, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        return (
+            f"SELECT TOP {fetch_count} id, observation_id, project_id, format, filename, "
+            "freq_ref, image_id, time_obs, time_obs_mjd, quality_level, released_date "
+            "FROM casda.catalogue ORDER BY id ASC"
         )
 
     def _validate_search(self, criteria: SearchCriteria) -> None:

@@ -24,8 +24,10 @@ from casda_mcp.parsers import (
     DatalinkAccess,
     UwsStatus,
     parse_datalink_access,
+    parse_sia1_surveys,
     parse_tap_csv,
     parse_uws_status,
+    parse_votable_rows,
 )
 from casda_mcp.provenance import sanitize_url
 from casda_mcp.vosi import parse_vosi_availability, parse_vosi_capabilities
@@ -34,6 +36,7 @@ LOGGER = logging.getLogger(__name__)
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 TAP_ACCEPT = "text/csv"
 DATALINK_ACCEPT = "application/x-votable+xml"
+VOTABLE_ACCEPT = "application/x-votable+xml"
 UWS_ACCEPT = "application/xml"
 BINARY_ACCEPT = "application/octet-stream"
 
@@ -118,6 +121,74 @@ class CasdaClient:
             correlation_id=correlation_id,
         )
         return parse_vosi_capabilities(response.content)
+
+    async def sia2_query(
+        self, params: list[tuple[str, str]], *, correlation_id: str
+    ) -> list[dict[str, str | None]]:
+        response = await self.request(
+            "GET",
+            self.settings.sia2_url,
+            params=params,
+            headers={"Accept": VOTABLE_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_votable_rows(response.content)
+
+    async def sia1_query(
+        self, params: list[tuple[str, str]], *, correlation_id: str
+    ) -> list[dict[str, str | None]]:
+        response = await self.request(
+            "GET",
+            self.settings.sia1_url,
+            params=params,
+            headers={"Accept": VOTABLE_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_votable_rows(response.content)
+
+    async def sia1_surveys(self, *, correlation_id: str) -> list[dict[str, str | None]]:
+        response = await self.request(
+            "GET",
+            self.settings.sia1_surveys_url,
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_sia1_surveys(response.content)
+
+    async def scs_query(
+        self,
+        catalogue: str,
+        params: list[tuple[str, str]],
+        *,
+        correlation_id: str,
+    ) -> list[dict[str, str | None]]:
+        url = f"{self.settings.scs_base_url}/{catalogue}"
+        self.validate_archive_url(url)
+        response = await self.request(
+            "GET",
+            url,
+            params=params,
+            headers={"Accept": VOTABLE_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_votable_rows(response.content)
+
+    async def ssa_query(
+        self, params: list[tuple[str, str]], *, correlation_id: str
+    ) -> list[dict[str, str | None]]:
+        response = await self.request(
+            "GET",
+            self.settings.ssa_url,
+            params=params,
+            headers={"Accept": VOTABLE_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_votable_rows(response.content)
 
     async def verify_authentication(self, *, correlation_id: str) -> None:
         if not self.settings.has_credentials:

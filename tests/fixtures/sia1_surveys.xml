@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Surveys>
+  <Survey>
+    <Code>RACS-Low</Code>
+    <Name>RACS-low DR1</Name>
+    <Description>888 Mhz survey images data release 1</Description>
+    <Group>Rapid ASKAP Continuum Survey (RACS)</Group>
+    <Endpoint>https://casda.csiro.au/casda_vo_tools/sia1/query?SURVEY=RACS-Low&amp;</Endpoint>
+  </Survey>
+  <Survey>
+    <Code>RACS-Mid</Code>
+    <Name>RACS-mid DR1</Name>
+    <Description>1367.5 Mhz survey images data release 1</Description>
+    <Group>Rapid ASKAP Continuum Survey (RACS)</Group>
+    <Endpoint>https://casda.csiro.au/casda_vo_tools/sia1/query?SURVEY=RACS-Mid&amp;</Endpoint>
+  </Survey>
+</Surveys>

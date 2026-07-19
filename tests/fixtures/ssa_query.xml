@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE version="1.3" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE name="CASDA SSAP Result" type="results">
+<INFO name="QUERY_STATUS" value="OK">Successful query</INFO>
+<TABLE name="results">
+<FIELD name="obs_publisher_id" datatype="char" arraysize="*"/>
+<FIELD name="title" datatype="char" arraysize="*"/>
+<FIELD name="access_url" datatype="char" arraysize="*"/>
+<FIELD name="access_format" datatype="char" arraysize="*"/>
+<FIELD name="s_ra" datatype="double" unit="deg"/>
+<FIELD name="s_dec" datatype="double" unit="deg"/>
+<FIELD name="obs_collection" datatype="char" arraysize="*"/>
+<FIELD name="spectrum_type" datatype="char" arraysize="*"/>
+<DATA><TABLEDATA>
+<TR><TD>spectrum-1</TD><TD>Example spectrum</TD><TD>https://data.csiro.au/casda_vo_proxy/vo/datalink/links?ID=spectrum-1</TD><TD>application/fits</TD><TD>187.5</TD><TD>-60.0</TD><TD>WALLABY</TD><TD>integrated</TD></TR>
+</TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>
