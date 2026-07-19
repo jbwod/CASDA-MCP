@@ -16,9 +16,9 @@ description: >-
 4. Staging and downloads are disabled by default. Treat `STAGING_DISABLED` / `DOWNLOADS_DISABLED` as configuration, not archive failures.
 5. Advanced ADQL (`casda_tap_query` / `casda_submit_tap_query`) requires `CASDA_ENABLE_ADVANCED_ADQL=true`. Treat `ADVANCED_ADQL_DISABLED` as configuration. Prefer allowlisted discovery tools when they suffice; validate with `casda_validate_adql` first.
 6. Read every tool response's structured error (via protocol `isError`) and `provenance`. Do not claim access CASDA has not confirmed (`access_state`, `authorisation_state`).
-7. Do not scrape or automate Data Access Portal legal-acceptance, administrative, or interactive UI flows. Pawsey staging and DOI minting remain out of scope or upstream-dependent.
-8. Discovery tools are available: VOSI/TAP_SCHEMA (`casda_get_archive_status`, `casda_list_capabilities`, `casda_list_schemas`, `casda_list_tables`, `casda_describe_table`), SIA/SCS/SSA, projects/collections, and `casda_list_events`. Cutouts and spectrum jobs are available via `casda_create_cutout` / `casda_create_spectrum` when staging is enabled.
-9. Prefer prompts such as `find-and-inspect-products`, `query-tables`, `run-adql`, `query-catalogue`, `make-cutout`, `stage-and-download`, and `build-reproducible-selection`. Read `casda://skills/{skill_name}` when procedural detail is needed.
+7. Do not scrape or automate Data Access Portal legal-acceptance, administrative, or interactive UI flows. Use `casda_get_dap_navigation` for deep links and structured `unsupported_actions`. Never auto-accept licences, assign roles, deposit Level 7 data, release observations, mint DOIs, or launch CARTA.
+8. Discovery tools are available: VOSI/TAP_SCHEMA, SIA/SCS/SSA, projects/collections, `casda_list_events`, `casda_resolve_collection_doi` (public citation read), and staging via `casda_stage_products` / `casda_stage_pawsey` / cutout / spectrum when enabled. Pawsey responses include human-gate warnings.
+9. Prefer prompts such as `find-and-inspect-products`, `query-tables`, `run-adql`, `query-catalogue`, `make-cutout`, `stage-and-download`, `dap-navigate`, and `build-reproducible-selection`. Read `casda://skills/{skill_name}` and `casda://dap/navigation` when needed.
 
 ## Units and identifiers
 

@@ -142,9 +142,10 @@ configuration fails fast.
 | `CASDA_EVENTS_URL` | CASDA observation events URL | Public lifecycle/event feed. |
 | `CASDA_USERNAME` | unset | OPAL username. Required with `CASDA_PASSWORD` for staging. |
 | `CASDA_PASSWORD` | unset | OPAL password. Stored as a secret value and never logged. |
-| `CASDA_ENABLE_STAGING` | `false` | Enables archive-side full-file/cutout/spectrum job creation when OPAL credentials are complete. |
+| `CASDA_ENABLE_STAGING` | `false` | Enables archive-side full-file, Pawsey, cutout, and spectrum job creation when OPAL credentials are complete. Pawsey pull is distinct from WEB download staging. |
 | `CASDA_ENABLE_DOWNLOADS` | `false` | Enables local file writes. |
 | `CASDA_ENABLE_ADVANCED_ADQL` | `false` | Enables `casda_tap_query` / async TAP submit after SELECT-only validation. |
+| `CASDA_ENABLE_DOI_RESOLVE` | `true` | Enables public read-only DOI resolve via DataCite/doi.org (no minting). |
 | `CASDA_DOWNLOAD_DIR` | unset | Required absolute, dedicated containment directory when downloads are enabled; filesystem roots are rejected, including through symlinks. |
 | `CASDA_ALLOW_OVERWRITE` | `false` | Allows atomic replacement of an existing destination. Keep false normally. |
 | `CASDA_MAX_RESULTS` | `100` | Maximum bounded search window, up to a hard limit of 1000. |
@@ -213,9 +214,9 @@ Discovery and job tools beyond the core ObsCore path include:
 | --- | --- |
 | Archive / TAP_SCHEMA | `casda_get_archive_status`, `casda_list_capabilities`, `casda_list_schemas`, `casda_list_tables`, `casda_describe_table`, `casda_list_foreign_keys` |
 | VO search | `casda_search_images`, `casda_list_image_surveys`, `casda_search_survey_images`, `casda_list_catalogues`, `casda_search_catalogue`, `casda_search_spectra` |
-| Projects / events | `casda_search_projects`, `casda_get_project`, `casda_get_collection`, `casda_list_events` |
+| Projects / events / DOI / DAP | `casda_search_projects`, `casda_get_project`, `casda_get_collection`, `casda_resolve_collection_doi`, `casda_get_dap_navigation`, `casda_list_events` |
 | Advanced ADQL | `casda_build_adql`, `casda_validate_adql`, `casda_tap_query`, `casda_submit_tap_query`, `casda_get_tap_job`, `casda_get_tap_results`, `casda_abort_tap_job`, `casda_delete_tap_job` |
-| DataLink / jobs | `casda_get_auth_status`, `casda_get_datalink`, `casda_create_cutout`, `casda_create_spectrum`, `casda_get_data_job`, `casda_get_data_job_results`, `casda_abort_data_job`, `casda_delete_data_job`, `casda_download_job_results`, `casda_verify_file` |
+| DataLink / jobs | `casda_get_auth_status`, `casda_get_datalink`, `casda_stage_pawsey`, `casda_create_cutout`, `casda_create_spectrum`, `casda_get_data_job`, `casda_get_data_job_results`, `casda_abort_data_job`, `casda_delete_data_job`, `casda_download_job_results`, `casda_verify_file` |
 
 The full name inventory is asserted in `tests/test_contract.py`.
 
@@ -287,6 +288,28 @@ and explicitly sets `allow_duplicate`.
 
 The non-idempotent archive creation and start requests are never automatically retried.
 
+### `casda_stage_pawsey`
+
+Creates and starts one Pawsey pull staging job via the DataLink `pawsey_async_service` descriptor.
+Requires the same `CASDA_ENABLE_STAGING` flag and OPAL credentials as WEB full-file staging, but
+results are Pawsey-network restricted. The response includes `human_gate_warnings`: a Pawsey HPC
+account is required, and licence/account confirmation must be completed by a human in the DAP —
+this server never auto-accepts terms. Reuse `casda_get_data_job` / download tools for lifecycle.
+
+### `casda_resolve_collection_doi`
+
+Read-only public citation resolve. Provide exactly one of `doi`, `collection`, or `project_code`.
+DOIs are fetched from DataCite JSON with a doi.org CSL-JSON fallback on allowlisted hosts only.
+Collection/project lookups never invent a DOI; when archive metadata has none, the tool returns
+`found=false` plus a DAP search navigation URL. CSIRO DAP DOIs typically use prefix `10.25919`
+(`is_csiro_dap`). Never mints DOIs.
+
+### `casda_get_dap_navigation`
+
+Constructs documented DAP deep links (Observation Search, Skymap, search hints) without scraping
+HTML. Privileged `action` values such as `accept_licence`, `mint_doi`, or `launch_carta` return
+structured `unsupported_actions` only — never HTTP mutation.
+
 ### `casda_get_staging_status`
 
 Performs exactly one uncached UWS status read:
@@ -339,7 +362,7 @@ metadata, filenames, estimated file sizes, available checksums, SBIDs, project c
 and spectral metadata, access state, collection metadata (`obs_collection`, `facility_name`, release
 span), known originating search criteria, provenance, and server version. Archive artifact URLs are
 never persisted in manifests because opaque paths may be short-lived bearer credentials even when
-they contain no query string. Machine DOI resolve remains upstream-dependent.
+they contain no query string. Use `casda_resolve_collection_doi` for public citation metadata.
 
 ## Resources
 
@@ -352,6 +375,7 @@ The server exposes read-only resources:
 - `casda://manifests/{manifest_id}`
 - `casda://archive/status`
 - `casda://archive/capabilities`
+- `casda://dap/navigation`
 - `casda://server/status`
 - `casda://skills` (JSON index of packaged agent skills)
 - `casda://skills/{skill_name}` (raw `SKILL.md` markdown)
@@ -369,10 +393,11 @@ Registered MCP prompts guide safe workflows:
 | `query-tables` | `list_schemas` → `list_tables` → `describe_table` |
 | `run-adql` | Validate then `tap_query` / submit (requires `CASDA_ENABLE_ADVANCED_ADQL`) |
 | `query-catalogue` | `casda_list_catalogues` / `casda_search_catalogue`, with ObsCore catalogue fallback |
-| `stage-and-download` | Stage explicit IDs, one-shot status checks, guarded download |
+| `stage-and-download` | Stage explicit IDs (WEB or Pawsey), one-shot status checks, guarded download |
 | `make-cutout` | `casda_create_cutout` → `casda_get_data_job` → download |
 | `build-reproducible-selection` | Create a manifest without persisting artifact URLs |
 | `monitor-releases` | Release fields via search/get_product; `casda_list_events` when useful |
+| `dap-navigate` | Safe DAP deep links; structured refusal of privileged automation |
 
 ## Agent skills
 
@@ -412,9 +437,10 @@ selection rule has not been established. WALLABY-specific rules should remain a 
 ### Stage and download
 
 1. Inspect the selected product and size.
-2. Call `casda_stage_products` with explicit IDs and an idempotency key.
+2. Call `casda_stage_products` for WEB download staging, or `casda_stage_pawsey` for Pawsey pull
+   (read `human_gate_warnings`; complete licence/HPC confirmation as a human in the DAP).
 3. Later, call `casda_get_staging_status` or `casda_get_data_job`; do not assume automatic polling.
-4. Only after products are ready, call `casda_download_product`.
+4. Only after products are ready, call `casda_download_product` (Pawsey results are network-restricted).
 5. Check returned length and checksum fields.
 
 ### Cutout
@@ -561,8 +587,9 @@ secrets only when explicitly enabling downloads or staging.
   temporary file, so resumption does not persist across separate calls. An abrupt process or host
   termination can leave a hashed lock in `.casda-mcp/locks` that an operator must inspect and remove
   before retrying that exact destination.
-- Source-name resolution is outside this server. Pawsey staging and machine DOI resolve remain
-  upstream-dependent / DAP-boundary.
+- Source-name resolution is outside this server. DOI minting, licence acceptance, and other
+  privileged DAP workflows remain DAP-boundary; use `casda_resolve_collection_doi` and
+  `casda_get_dap_navigation` for safe read-only helpers.
 - Beam identifiers may be retained in filenames or target metadata, but CASDA ObsCore does not expose
   a generic structured neighbouring-beam relationship used by this implementation.
 

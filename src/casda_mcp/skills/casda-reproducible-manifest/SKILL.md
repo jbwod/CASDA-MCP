@@ -18,7 +18,7 @@ description: >-
 
 ## What the manifest includes
 
-Typed product metadata, filenames, estimated sizes, available checksums, SBIDs, project codes, spatial/spectral fields, access state, known originating search criteria, sanitised provenance, and per-product `collection_metadata` (`obs_collection`, `facility_name`, release date span) plus a de-duplicated `collections` summary. Public DOI resolve remains upstream-dependent and is not invented here. The tool does not stage or download files.
+Typed product metadata, filenames, estimated sizes, available checksums, SBIDs, project codes, spatial/spectral fields, access state, known originating search criteria, sanitised provenance, and per-product `collection_metadata` (`obs_collection`, `facility_name`, release date span) plus a de-duplicated `collections` summary. For citation metadata call `casda_resolve_collection_doi`; never invent a DOI. The tool does not stage or download files.
 
 ## Related prompt
 

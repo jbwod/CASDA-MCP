@@ -14,6 +14,7 @@ EXPECTED_PROMPTS = {
     "run-adql",
     "make-cutout",
     "monitor-releases",
+    "dap-navigate",
 }
 
 EXPECTED_SKILLS = {

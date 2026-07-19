@@ -37,7 +37,6 @@ from casda_mcp.models import (
     GetObservationResponse,
     GetProductResponse,
     GetProjectResponse,
-    ResolveCollectionDoiResponse,
     ListCapabilitiesResponse,
     ListCataloguesResponse,
     ListEventsResponse,
@@ -46,6 +45,7 @@ from casda_mcp.models import (
     ListSchemasResponse,
     ListTablesResponse,
     ListTapExamplesResponse,
+    ResolveCollectionDoiResponse,
     SearchCatalogueResponse,
     SearchImagesResponse,
     SearchProductsResponse,
@@ -1516,16 +1516,19 @@ def create_mcp_server(
             else ""
         )
         return (
-            "Use the CASDA MCP for authenticated full-file staging and guarded download.\n\n"
+            "Use the CASDA MCP for authenticated staging and guarded download.\n\n"
             f"Selected product_ids (comma-separated or JSON list text): {product_ids}\n"
             "1. Confirm OPAL credentials and that staging/downloads are enabled; "
             "treat STAGING_DISABLED or DOWNLOADS_DISABLED as configuration issues.\n"
             "2. Inspect sizes with casda_get_product for each ID.\n"
-            "3. Call casda_stage_products with those explicit IDs and a stable idempotency_key.\n"
+            "3. Call casda_stage_products for WEB download staging, or casda_stage_pawsey for "
+            "Pawsey pull. For Pawsey, present every human_gate_warnings entry and never "
+            "auto-accept DAP licences.\n"
             "4. Later call casda_get_staging_status once for the returned request_id; "
             "do not assume background polling.\n"
             "5. Only after products are ready, call casda_download_product one product at a "
-            f"time with verify_checksum=true.{destination_text}\n"
+            f"time with verify_checksum=true.{destination_text} "
+            "Pawsey results are network-restricted.\n"
             "6. For spatial/spectral subsets use prompt make-cutout / casda_create_cutout "
             "(or casda_create_spectrum); then casda_get_data_job and download tools.\n"
             "7. Read casda://skills/casda-stage-and-download for safety details."

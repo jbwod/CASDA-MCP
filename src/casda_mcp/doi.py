@@ -40,8 +40,9 @@ def normalize_doi(value: str) -> str:
 def doi_record_from_datacite(payload: dict[str, Any], *, doi: str) -> DoiRecord:
     """Build a DoiRecord from a DataCite REST API JSON document."""
 
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    attributes = data.get("attributes") if isinstance(data, dict) else None
+    raw_data = payload.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else payload
+    attributes = data.get("attributes")
     if not isinstance(attributes, dict):
         raise ValidationError("DataCite response did not include DOI attributes.")
     resolved_doi = str(attributes.get("doi") or data.get("id") or doi)

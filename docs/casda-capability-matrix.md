@@ -42,11 +42,13 @@ tested offline; live OPAL conformance remains optional and separate from default
 | `casda_get_observation` | **Implemented** | ASKAP SBID convention, related projects, bounded products |
 | Discovery tools (VOSI, TAP_SCHEMA, SIA/SCS/SSA, projects, events) | **Implemented** | `vosi.py`, `service.py`, `tests/test_discovery.py`, `tests/test_vo_search.py`, `tests/test_events.py`; optional `-m live` checks |
 | Advanced ADQL / async TAP | **Implemented** | Flag-gated SELECT-only policy; `adql.py`, `tests/test_adql.py`, `tests/test_tap_jobs.py` |
-| `casda_stage_products` / cutout / spectrum / data-job tools | **Implemented** | Full-file, cutout, and spectrum SODA jobs plus abort/delete/results/download; `tests/test_staging.py`, `tests/test_datalink_jobs.py` |
+| `casda_stage_products` / `casda_stage_pawsey` / cutout / spectrum / data-job tools | **Implemented** | Full-file WEB, Pawsey pull, cutout, and spectrum SODA jobs plus abort/delete/results/download; Pawsey responses include human-gate warnings; `tests/test_staging.py`, `tests/test_datalink_jobs.py` |
 | `casda_download_product` / `casda_download_job_results` / `casda_verify_file` | **Implemented** | Restricted local root, checksum/length guards; `tests/test_downloads.py` |
-| `casda_create_manifest` | **Implemented** | Deterministic product manifest with collection metadata fields; DOI resolve remains upstream-dependent |
-| Product, observation, staging, event, manifest, skill, archive, and server-status resources | **Implemented** | Including `casda://archive/status`, `casda://archive/capabilities`, `casda://events/{event_id}` |
-| MCP prompts | **Implemented** | Eight workflow prompts, including supported `make-cutout`, `query-tables`, and `run-adql` |
+| `casda_create_manifest` | **Implemented** | Deterministic product manifest with collection metadata fields |
+| `casda_resolve_collection_doi` | **Implemented** | Public DataCite/doi.org read-only resolve; never mints; `tests/test_doi.py` |
+| `casda_get_dap_navigation` | **Implemented** | Safe DAP deep links and structured unsupported privileged actions; `tests/test_dap_navigation.py` |
+| Product, observation, staging, event, manifest, skill, archive, DAP navigation, and server-status resources | **Implemented** | Including `casda://archive/status`, `casda://archive/capabilities`, `casda://dap/navigation`, `casda://events/{event_id}` |
+| MCP prompts | **Implemented** | Nine workflow prompts, including `make-cutout`, `dap-navigate`, `query-tables`, and `run-adql` |
 | Agent skills | **Implemented** | Four packaged `SKILL.md` files exposed as `casda://skills` resources and mirrored under `.cursor/skills/` |
 
 ## Confirmed CASDA endpoints
@@ -74,7 +76,7 @@ deployment on 18 July 2026. Standard behavior is defined by the linked IVOA spec
 | Full-file staging | SODA/UWS | `https://casda.csiro.au/casda_data_access/data/async` | Authenticated DataLink token | **Implemented**: `casda_stage_products` |
 | Spatial/spectral cutout | SODA/UWS | Same async endpoint; DataLink descriptor `cutout_service` | Authenticated | **Implemented**: `casda_create_cutout`; `tests/test_datalink_jobs.py` |
 | Integrated spectrum generation | SODA/UWS | Same async endpoint; descriptor `spectrum_generation_service` | Authenticated | **Implemented**: `casda_create_spectrum` |
-| Pawsey staging | SODA/UWS | Descriptor `pawsey_async_service` | Authenticated/Pawsey workflow | **Upstream-dependent** |
+| Pawsey staging | SODA/UWS | Descriptor `pawsey_async_service` | Authenticated/Pawsey workflow | **Implemented**: `casda_stage_pawsey` (human licence/HPC gate documented) |
 | Observation events | VOEvent-style HTTP feed | `https://casda.csiro.au/casda_data_access/observations/events` | Public | **Implemented**: `casda_list_events`; `tests/test_events.py` |
 | Data Access API description | OpenAPI | `https://casda.csiro.au/casda_data_access/swagger-ui.html` | Public documentation | Research/discovery source |
 
@@ -121,7 +123,8 @@ unlimited-result interface. CASDA currently advertises [TAP 1.0][tap-1] and
 | Spectrum discovery | `casda_search_spectra` using SSA | **Implemented** |
 | Project and collection discovery | `casda_search_projects`; `casda_get_project`; `casda_get_collection` | **Implemented**; `tests` in discovery/events suites |
 | Observation lifecycle events | `casda_list_events`; event resource template | **Implemented**; `tests/test_events.py` |
-| DOI/collection metadata read | `casda_resolve_collection_doi` | **Upstream-dependent** until a stable machine contract is confirmed from OpenAPI |
+| DOI/collection metadata read | `casda_resolve_collection_doi` | **Implemented** as public DataCite/doi.org read (`tests/test_doi.py`); minting remains DAP boundary |
+| Safe DAP navigation helpers | `casda_get_dap_navigation`; `casda://dap/navigation` | **Implemented**; privileged actions return structured unsupported responses |
 | Astronomical name resolution | Accept resolved ICRS coordinates | External service, not a CASDA protocol |
 
 SIA, SCS, and SSA are separate supported archive interfaces, not aliases of TAP. Their response
@@ -134,8 +137,9 @@ See [SIA 2.0][sia-2], [Simple Cone Search 1.03][scs-1-03], and [SSA 1.1][ssa-1-1
 | --- | --- | --- |
 | Authentication state | `casda_get_auth_status` | **Implemented** |
 | Inspect DataLink response | `casda_get_datalink` | **Implemented**; `tests/test_datalink_jobs.py` |
-| Select advertised access service | Allowlisted descriptor input | **Implemented**: full-file, cutout, and spectrum descriptors |
+| Select advertised access service | Allowlisted descriptor input | **Implemented**: full-file, Pawsey, cutout, and spectrum descriptors |
 | Full-file staging | `casda_stage_products` | **Implemented**: bounded, idempotent, serialised submission |
+| Pawsey staging | `casda_stage_pawsey` | **Implemented**: DataLink `pawsey_async_service`; human licence/HPC gate warnings; distinct from WEB download staging |
 | Data job status | `casda_get_data_job`, retaining `casda_get_staging_status` as a focused alias | **Implemented** |
 | Spatial/spectral cutout | `casda_create_cutout` with `CIRCLE`, `POLYGON`, `BAND`, `CHANNEL`, `POL`, and `COORD` | **Implemented** |
 | Integrated spectrum | `casda_create_spectrum` | **Implemented** |
@@ -144,8 +148,8 @@ See [SIA 2.0][sia-2], [Simple Cone Search 1.03][scs-1-03], and [SSA 1.1][ssa-1-1
 | Download one result | `casda_download_product` | **Implemented**: hardened, bounded, validator-aware single-result download |
 | Download all selected results | `casda_download_job_results` | **Implemented** |
 | Verify a local artifact | Integrated verification and optional `casda_verify_file` | **Implemented** |
-| Reproducible selection | `casda_create_manifest`; manifest resource | **Implemented**: typed deterministic manifest with collection metadata; DOI citation resolve remains upstream-dependent |
-| Pawsey staging | — | **Upstream-dependent** |
+| Reproducible selection | `casda_create_manifest`; manifest resource | **Implemented**: typed deterministic manifest with collection metadata |
+| Public DOI resolve | `casda_resolve_collection_doi` | **Implemented**: DataCite/doi.org read-only; collection/project lookup never invents DOIs |
 
 CASDA DataLink responses advertise `async_service`, `pawsey_async_service`, `cutout_service`, and
 `spectrum_generation_service`. The opaque authenticated token returned by DataLink is passed as the
@@ -277,17 +281,17 @@ mutations. The supported boundary is:
 
 | DAP behavior | MCP policy |
 | --- | --- |
-| Observation Search form | **DAP boundary for the UI**; expose equivalent supported TAP/SIA operations |
-| Interactive Skymap/Aladin selection and preview | **DAP boundary**; accept explicit coordinates or return a DAP navigation link |
+| Observation Search form | **DAP boundary for the UI**; TAP/SIA tools plus `casda_get_dap_navigation` deep links |
+| Interactive Skymap/Aladin selection and preview | **DAP boundary**; accept explicit coordinates or return a DAP navigation link via `casda_get_dap_navigation` |
 | Curated Cutout UI | **DAP boundary for the UI**; the underlying documented SODA cutout operation is implemented via MCP tools |
-| CARTA viewer/session launch | **DAP boundary** unless CSIRO publishes a stable supported session API |
+| CARTA viewer/session launch | **DAP boundary**; `casda_get_dap_navigation(action="launch_carta")` returns structured unsupported_actions |
 | Automatic email notifications | Archive/DAP responsibility; MCP returns job status and result information |
-| Licence acknowledgement or Pawsey account confirmation | Human action; never auto-accept legal terms |
-| Project role assignment | Privileged DAP administration, out of scope |
+| Licence acknowledgement or Pawsey account confirmation | Human action; never auto-accept; Pawsey staging surfaces `human_gate_warnings` |
+| Project role assignment | Privileged DAP administration; structured unsupported via `casda_get_dap_navigation` |
 | Quality flags, validation notes, and validation tasks | Privileged science-team workflow, out of scope |
-| Release or rejection of an observation | CASDA administrator mutation, out of scope |
-| Level 7 deposit creation and publishing | Privileged DAP/Pawsey workflow, out of scope |
-| DOI minting and DataCite administration | Administrative boundary; public DOI/collection metadata remains a read target |
+| Release or rejection of an observation | CASDA administrator mutation; structured unsupported via navigation helper |
+| Level 7 deposit creation and publishing | Privileged DAP/Pawsey workflow; structured unsupported via navigation helper |
+| DOI minting and DataCite administration | Administrative boundary; public read via `casda_resolve_collection_doi` only |
 | Unreleased data access | In scope only through the current user's authenticated principal and CASDA authorization; never bypass or infer entitlement |
 
 The User Guide documents the DAP's [validation, project-role, and Level 7 deposit
