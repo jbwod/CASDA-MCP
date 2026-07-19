@@ -694,6 +694,26 @@ class ResolveCollectionDoiResponse(BaseModel):
     error: ErrorInfo | None = None
 
 
+class DapLink(BaseModel):
+    title: str
+    url: str
+    purpose: str
+    requires_human: bool = True
+
+
+class UnsupportedDapAction(BaseModel):
+    code: str
+    message: str
+    navigation_url: str | None = None
+
+
+class DapNavigationResponse(BaseModel):
+    links: list[DapLink] = Field(default_factory=list)
+    unsupported_actions: list[UnsupportedDapAction] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
 class ListEventsResponse(BaseModel):
     events: list[ObservationEvent] = Field(default_factory=list)
     pagination: Pagination | None = None

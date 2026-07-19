@@ -13,6 +13,7 @@ EXPECTED_TOOL_NAMES = frozenset(
         "casda_get_project",
         "casda_get_collection",
         "casda_resolve_collection_doi",
+        "casda_get_dap_navigation",
         "casda_list_events",
         "casda_get_archive_status",
         "casda_list_capabilities",
@@ -63,6 +64,7 @@ EXPECTED_PROMPT_NAMES = frozenset(
         "run-adql",
         "make-cutout",
         "monitor-releases",
+        "dap-navigate",
     }
 )
 
@@ -93,6 +95,7 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda://skills",
         "casda://archive/status",
         "casda://archive/capabilities",
+        "casda://dap/navigation",
     }
     prompts = await server.list_prompts()
     prompt_names = frozenset(prompt.name for prompt in prompts)

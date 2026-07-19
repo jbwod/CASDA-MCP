@@ -18,6 +18,7 @@ from casda_mcp.cache import TTLCache
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
 from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
+from casda_mcp.dap_navigation import build_dap_navigation, navigation_resource_payload
 from casda_mcp.doi import doi_record_from_csl, doi_record_from_datacite, normalize_doi
 from casda_mcp.downloads import Downloader, parse_checksum, resolve_destination
 from casda_mcp.errors import CasdaError, ValidationError
@@ -32,6 +33,7 @@ from casda_mcp.models import (
     CollectionSummary,
     ColumnInfo,
     CreateManifestResponse,
+    DapNavigationResponse,
     DataJobResult,
     DataJobResultsResponse,
     DatalinkServiceDescriptor,
@@ -1568,6 +1570,61 @@ class CasdaService:
                 correlation_id=correlation_id,
             ),
         )
+
+    async def get_dap_navigation(
+        self,
+        *,
+        product_id: str | None = None,
+        scheduling_block_id: int | None = None,
+        project_code: str | None = None,
+        collection: str | None = None,
+        request_id: str | None = None,
+        action: str | None = None,
+    ) -> DapNavigationResponse:
+        """Return DAP deep links and structured unsupported privileged actions (no network)."""
+
+        requested_at = utc_now()
+        if project_code is not None and project_code.strip():
+            code = project_code.strip().upper()
+            if not PROJECT_CODE_RE.fullmatch(code):
+                raise ValidationError("project_code is not a valid CASDA/OPAL project code.")
+            project_code = code
+        if product_id is not None and product_id.strip():
+            product_id = normalize_product_id(product_id)
+        if collection is not None and collection.strip():
+            adql_string(collection, field="collection")
+            collection = collection.strip()
+        if request_id is not None and request_id.strip():
+            request_id = validate_idempotency_key(request_id.strip())
+        links, unsupported = build_dap_navigation(
+            product_id=product_id,
+            scheduling_block_id=scheduling_block_id,
+            project_code=project_code,
+            collection=collection,
+            request_id=request_id,
+            action=action,
+        )
+        return DapNavigationResponse(
+            links=links,
+            unsupported_actions=unsupported,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint="casda://dap/navigation",
+                parameters={
+                    "product_id": product_id,
+                    "scheduling_block_id": scheduling_block_id,
+                    "project_code": project_code,
+                    "collection": collection,
+                    "request_id": request_id,
+                    "action": action,
+                },
+                result_count=len(links),
+                correlation_id=str(uuid.uuid4()),
+            ),
+        )
+
+    def dap_navigation_resource(self) -> dict[str, object]:
+        return navigation_resource_payload()
 
     async def list_events(
         self,

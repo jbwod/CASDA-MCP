@@ -24,6 +24,7 @@ from casda_mcp.models import (
     AuthStatusResponse,
     BuildAdqlResponse,
     CreateManifestResponse,
+    DapNavigationResponse,
     DataJobResultsResponse,
     DeleteDataJobResponse,
     DeleteTapJobResponse,
@@ -964,6 +965,55 @@ def create_mcp_server(
         except Exception as exc:
             _raise_internal_error(exc)
 
+    @mcp.tool(title="Get DAP navigation links", annotations=_LOCAL_READ_ONLY)
+    async def casda_get_dap_navigation(
+        product_id: Annotated[
+            str | None, Field(description="Optional product identifier for a DAP search link.")
+        ] = None,
+        scheduling_block_id: Annotated[
+            int | None, Field(description="Optional scheduling block ID for Observation Search.")
+        ] = None,
+        project_code: Annotated[
+            str | None, Field(description="Optional OPAL project code for a DAP search link.")
+        ] = None,
+        collection: Annotated[
+            str | None, Field(description="Optional collection name for a DAP search link.")
+        ] = None,
+        request_id: Annotated[
+            str | None,
+            Field(description="Optional archive data-job request_id for human follow-up guidance."),
+        ] = None,
+        action: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional privileged action name. Supported for structured refusal only: "
+                    "accept_licence, assign_project_role, level7_deposit, release_observation, "
+                    "mint_doi, launch_carta. Never performs HTTP mutation."
+                )
+            ),
+        ] = None,
+    ) -> DapNavigationResponse:
+        """Return DAP deep links and structured unsupported privileged actions.
+
+        Constructs documented public HTTPS URLs only. Does not scrape DAP HTML, accept
+        licences, mint DOIs, assign roles, deposit Level 7 data, release observations, or
+        launch CARTA. Read casda://dap/navigation for template summary.
+        """
+        try:
+            return await service.get_dap_navigation(
+                product_id=product_id,
+                scheduling_block_id=scheduling_block_id,
+                project_code=project_code,
+                collection=collection,
+                request_id=request_id,
+                action=action,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
     @mcp.tool(title="List CASDA observation events", annotations=_READ_ONLY)
     async def casda_list_events(
         page_size: Annotated[
@@ -1662,11 +1712,56 @@ def create_mcp_server(
             "4. Do not scrape the DAP for release notices."
         )
 
+    @mcp.prompt(
+        name="dap-navigate",
+        title="Navigate DAP safely",
+        description=(
+            "Return human DAP deep links for Observation Search, Skymap, and related pages; "
+            "refuse privileged automation with structured unsupported_actions."
+        ),
+    )
+    def dap_navigate(
+        product_id: str | None = None,
+        project_code: str | None = None,
+        collection: str | None = None,
+        action: str | None = None,
+    ) -> str:
+        hints: list[str] = []
+        if product_id:
+            hints.append(f'product_id="{product_id}"')
+        if project_code:
+            hints.append(f'project_code="{project_code}"')
+        if collection:
+            hints.append(f'collection="{collection}"')
+        if action:
+            hints.append(f'action="{action}"')
+        hint_text = ", ".join(hints) if hints else "identifiers supplied by the user"
+        return (
+            "Provide safe DAP navigation links without scraping or privileged automation.\n\n"
+            f"1. Call casda_get_dap_navigation with {hint_text}.\n"
+            "2. Present returned links to the user; mark requires_human links as browser-only.\n"
+            "3. If unsupported_actions is non-empty, explain that licence acceptance, role "
+            "assignment, Level 7 deposit, release/reject, DOI minting, and CARTA launch must "
+            "be completed by a human in the DAP — never invent HTTP forms or auto-accept terms.\n"
+            "4. For citation metadata use casda_resolve_collection_doi (read-only).\n"
+            "5. Read casda://dap/navigation and casda://skills/casda-safe-archive-access."
+        )
+
     @mcp.resource("casda://archive/status", mime_type="application/json")
     async def archive_status_resource() -> str:
         """Read-only VOSI availability for the configured public CASDA TAP service."""
         try:
             return (await service.get_archive_status()).model_dump_json(exclude_none=True)
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
+
+    @mcp.resource("casda://dap/navigation", mime_type="application/json")
+    async def dap_navigation_resource() -> str:
+        """Static summary of safe DAP deep-link templates (no network)."""
+        try:
+            return json.dumps(
+                service.dap_navigation_resource(), separators=(",", ":"), sort_keys=True
+            )
         except CasdaError as exc:
             return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
 
