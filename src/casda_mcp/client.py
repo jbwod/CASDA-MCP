@@ -203,6 +203,89 @@ class CasdaClient:
         )
         return parse_uws_status(response.content)
 
+    async def create_tap_job(self, query: str, *, max_records: int, correlation_id: str) -> str:
+        """Create one async TAP job. This non-idempotent request is never automatically retried."""
+
+        response = await self.request(
+            "POST",
+            self.settings.tap_async_url,
+            data={
+                "REQUEST": "doQuery",
+                "LANG": "ADQL",
+                "FORMAT": "csv",
+                "MAXREC": str(max_records),
+                "QUERY": query,
+            },
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            correlation_id=correlation_id,
+        )
+        job_url = str(response.url).rstrip("/")
+        self.validate_archive_url(job_url)
+        return job_url
+
+    async def start_tap_job(self, job_url: str, *, correlation_id: str) -> None:
+        """Start one async TAP job. This non-idempotent request is never automatically retried."""
+
+        self.validate_archive_url(job_url)
+        await self.request(
+            "POST",
+            f"{job_url}/phase",
+            data={"PHASE": "RUN"},
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            correlation_id=correlation_id,
+        )
+
+    async def get_tap_job(self, job_url: str, *, correlation_id: str) -> UwsStatus:
+        self.validate_archive_url(job_url)
+        response = await self.request(
+            "GET",
+            job_url,
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_uws_status(response.content)
+
+    async def get_tap_job_results(
+        self, job_url: str, *, correlation_id: str
+    ) -> list[dict[str, str | None]]:
+        """Fetch async TAP results, preferring CSV from the standard result location."""
+
+        self.validate_archive_url(job_url)
+        response = await self.request(
+            "GET",
+            f"{job_url}/results/result",
+            headers={"Accept": TAP_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_tap_csv(response.content)
+
+    async def abort_tap_job(self, job_url: str, *, correlation_id: str) -> None:
+        self.validate_archive_url(job_url)
+        await self.request(
+            "POST",
+            f"{job_url}/phase",
+            data={"PHASE": "ABORT"},
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            correlation_id=correlation_id,
+        )
+
+    async def delete_tap_job(self, job_url: str, *, correlation_id: str) -> None:
+        """Delete one async TAP job. This non-idempotent request is never automatically retried."""
+
+        self.validate_archive_url(job_url)
+        await self.request(
+            "DELETE",
+            job_url,
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            correlation_id=correlation_id,
+        )
+
     async def request(
         self,
         method: str,

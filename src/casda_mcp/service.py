@@ -18,9 +18,11 @@ from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
 from casda_mcp.downloads import Downloader
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
+    AbortTapJobResponse,
     BuildAdqlResponse,
     ColumnInfo,
     CreateManifestResponse,
+    DeleteTapJobResponse,
     DescribeTableResponse,
     DownloadProductResponse,
     ForeignKeyInfo,
@@ -42,7 +44,11 @@ from casda_mcp.models import (
     StagingItem,
     StagingRequest,
     StagingStatusResponse,
+    SubmitTapQueryResponse,
     TableInfo,
+    TapJobRecord,
+    TapJobResultsResponse,
+    TapJobStatusResponse,
     TapQueryResponse,
     UwsResult,
     ValidateAdqlResponse,
@@ -510,6 +516,148 @@ class CasdaService:
                 correlation_id=correlation_id,
             ),
         )
+
+    async def submit_tap_query(self, query: str) -> SubmitTapQueryResponse:
+        """Create and start one async TAP job for a validated SELECT-only query."""
+
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if not self.settings.enable_advanced_adql:
+            raise CasdaError(
+                "ADVANCED_ADQL_DISABLED",
+                "Advanced ADQL is disabled by server configuration.",
+            )
+        validated = validate_adql(
+            query,
+            max_length=self.settings.max_adql_length,
+            max_rows=self.settings.max_tap_rows,
+        )
+        job_url = await self.client.create_tap_job(
+            validated.query,
+            max_records=validated.max_rows,
+            correlation_id=correlation_id,
+        )
+        request_id = unquote(urlparse(job_url).path.rstrip("/").rsplit("/", 1)[-1])
+        validate_idempotency_key(request_id)
+        await self.client.start_tap_job(job_url, correlation_id=correlation_id)
+        record = TapJobRecord(
+            request_id=request_id,
+            job_url=job_url,
+            query_hash=canonical_hash({"query": validated.query, "max_rows": validated.max_rows}),
+            created_at=requested_at,
+            phase="QUEUED",
+        )
+        self.state.put_tap_job(record)
+        self.note_archive_availability(True, detail="TAP async job submitted")
+        return SubmitTapQueryResponse(
+            request_id=request_id,
+            status=record.phase,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_async_url,
+                parameters={"query": validated.query, "max_rows": validated.max_rows},
+                result_count=1,
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_tap_job_status(self, request_id: str) -> TapJobStatusResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        record = self._require_tap_job(request_id)
+        archive = await self.client.get_tap_job(record.job_url, correlation_id=correlation_id)
+        record.phase = archive.phase
+        self.state.put_tap_job(record)
+        return TapJobStatusResponse(
+            request_id=record.request_id,
+            status=archive.phase,
+            failure_reason=archive.failure_reason,
+            expiry_time=archive.destruction,
+            results=archive.results,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=record.job_url,
+                parameters={"request_id": record.request_id, "cache_bypassed": True},
+                result_count=len(archive.results),
+                request_id=record.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_tap_results(self, request_id: str) -> TapJobResultsResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        record = self._require_tap_job(request_id)
+        rows = await self.client.get_tap_job_results(record.job_url, correlation_id=correlation_id)
+        max_rows = self.settings.max_tap_rows
+        if len(rows) > max_rows:
+            rows = rows[:max_rows]
+        return TapJobResultsResponse(
+            request_id=record.request_id,
+            rows=rows,
+            max_rows=max_rows,
+            returned=len(rows),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=f"{record.job_url}/results/result",
+                parameters={"request_id": record.request_id, "max_rows": max_rows},
+                result_count=len(rows),
+                request_id=record.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def abort_tap_job(self, request_id: str) -> AbortTapJobResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        record = self._require_tap_job(request_id)
+        await self.client.abort_tap_job(record.job_url, correlation_id=correlation_id)
+        archive = await self.client.get_tap_job(record.job_url, correlation_id=correlation_id)
+        record.phase = archive.phase
+        self.state.put_tap_job(record)
+        return AbortTapJobResponse(
+            request_id=record.request_id,
+            status=record.phase,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=f"{record.job_url}/phase",
+                parameters={"request_id": record.request_id, "phase": "ABORT"},
+                result_count=1,
+                request_id=record.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def delete_tap_job(self, request_id: str) -> DeleteTapJobResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        record = self._require_tap_job(request_id)
+        await self.client.delete_tap_job(record.job_url, correlation_id=correlation_id)
+        self.state.delete_tap_job(record.request_id)
+        return DeleteTapJobResponse(
+            request_id=record.request_id,
+            deleted=True,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=record.job_url,
+                parameters={"request_id": record.request_id, "action": "DELETE"},
+                result_count=0,
+                request_id=record.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _require_tap_job(self, request_id: str) -> TapJobRecord:
+        request_id = validate_idempotency_key(request_id)
+        record = self.state.get_tap_job(request_id)
+        if record is None:
+            raise CasdaError(
+                "TAP_JOB_NOT_FOUND",
+                "The TAP job is not known to this server instance or configured state database.",
+                details={"request_id": request_id},
+            )
+        return record
 
     async def search_products(self, criteria: SearchCriteria) -> SearchProductsResponse:
         requested_at = utc_now()

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<uws:job xmlns:uws="http://www.ivoa.net/xml/UWS/v1.0"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <uws:jobId>tap-job-1</uws:jobId>
+  <uws:phase>ABORTED</uws:phase>
+  <uws:destruction>2026-07-20T00:00:00Z</uws:destruction>
+  <uws:results/>
+</uws:job>

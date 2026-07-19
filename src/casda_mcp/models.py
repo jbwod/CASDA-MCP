@@ -363,3 +363,51 @@ class TapQueryResponse(BaseModel):
     returned: int
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
+
+
+class TapJobRecord(BaseModel):
+    request_id: str
+    job_url: str = Field(repr=False)
+    query_hash: str
+    created_at: datetime
+    phase: StagingState
+
+
+class SubmitTapQueryResponse(BaseModel):
+    request_id: str
+    status: StagingState
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class TapJobStatusResponse(BaseModel):
+    request_id: str
+    status: StagingState
+    failure_reason: str | None = None
+    expiry_time: datetime | None = None
+    results: list[UwsResult] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class TapJobResultsResponse(BaseModel):
+    request_id: str
+    rows: list[dict[str, str | None]] = Field(default_factory=list)
+    max_rows: int
+    returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class AbortTapJobResponse(BaseModel):
+    request_id: str
+    status: StagingState
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DeleteTapJobResponse(BaseModel):
+    request_id: str
+    deleted: bool = True
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None

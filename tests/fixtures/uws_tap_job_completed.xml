@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<uws:job xmlns:uws="http://www.ivoa.net/xml/UWS/v1.0"
+  xmlns:xlink="http://www.w3.org/1999/xlink">
+  <uws:jobId>tap-job-1</uws:jobId>
+  <uws:phase>COMPLETED</uws:phase>
+  <uws:destruction>2026-07-20T00:00:00Z</uws:destruction>
+  <uws:results>
+    <uws:result id="result"
+      mime-type="text/csv"
+      xlink:href="https://casda.csiro.au/casda_vo_tools/tap/async/tap-job-1/results/result"/>
+  </uws:results>
+</uws:job>

@@ -19,8 +19,10 @@ from starlette.routing import Route
 from casda_mcp import __version__
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
+    AbortTapJobResponse,
     BuildAdqlResponse,
     CreateManifestResponse,
+    DeleteTapJobResponse,
     DescribeTableResponse,
     DownloadProductResponse,
     GetArchiveStatusResponse,
@@ -33,6 +35,9 @@ from casda_mcp.models import (
     SearchProductsResponse,
     StageProductsResponse,
     StagingStatusResponse,
+    SubmitTapQueryResponse,
+    TapJobResultsResponse,
+    TapJobStatusResponse,
     TapQueryResponse,
     ValidateAdqlResponse,
 )
@@ -66,6 +71,9 @@ _LOCAL_READ_ONLY = ToolAnnotations(
 )
 _STATE_CHANGING = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+)
+_DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
 )
 _IDEMPOTENT_WRITE = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
@@ -518,6 +526,80 @@ def create_mcp_server(
         """
         try:
             return await service.tap_query(query)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Submit CASDA async TAP query", annotations=_STATE_CHANGING)
+    async def casda_submit_tap_query(
+        query: Annotated[
+            str,
+            Field(description="SELECT-only ADQL submitted as an async TAP/UWS job."),
+        ],
+    ) -> SubmitTapQueryResponse:
+        """Create and start one async TAP job for validated SELECT-only ADQL.
+
+        Requires CASDA_ENABLE_ADVANCED_ADQL. Create and RUN are never automatically retried.
+        """
+        try:
+            return await service.submit_tap_query(query)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA TAP job", annotations=_READ_ONLY)
+    async def casda_get_tap_job(
+        request_id: Annotated[
+            str, Field(description="Async TAP job identifier returned by this server.")
+        ],
+    ) -> TapJobStatusResponse:
+        """Perform one uncached status check for a TAP job created by this server."""
+        try:
+            return await service.get_tap_job_status(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA TAP results", annotations=_READ_ONLY)
+    async def casda_get_tap_results(
+        request_id: Annotated[
+            str, Field(description="Async TAP job identifier returned by this server.")
+        ],
+    ) -> TapJobResultsResponse:
+        """Fetch bounded CSV results for a TAP job created by this server."""
+        try:
+            return await service.get_tap_results(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Abort CASDA TAP job", annotations=_STATE_CHANGING)
+    async def casda_abort_tap_job(
+        request_id: Annotated[
+            str, Field(description="Async TAP job identifier returned by this server.")
+        ],
+    ) -> AbortTapJobResponse:
+        """Abort a TAP job created by this server."""
+        try:
+            return await service.abort_tap_job(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Delete CASDA TAP job", annotations=_DESTRUCTIVE)
+    async def casda_delete_tap_job(
+        request_id: Annotated[
+            str, Field(description="Async TAP job identifier returned by this server.")
+        ],
+    ) -> DeleteTapJobResponse:
+        """Delete a TAP job created by this server from the archive and local state."""
+        try:
+            return await service.delete_tap_job(request_id)
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:

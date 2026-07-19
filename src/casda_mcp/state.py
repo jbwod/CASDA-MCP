@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
-from casda_mcp.models import Manifest, ReadyArtifact, StagingRequest
+from casda_mcp.models import Manifest, ReadyArtifact, StagingRequest, TapJobRecord
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -287,6 +287,16 @@ class StateStore:
 
     def get_search(self, product_id: str) -> dict[str, Any] | None:
         return self._get("search", product_id)
+
+    def put_tap_job(self, job: TapJobRecord) -> None:
+        self._put("tap_job", job.request_id, job.model_dump(mode="json", exclude_none=False))
+
+    def get_tap_job(self, request_id: str) -> TapJobRecord | None:
+        value = self._get("tap_job", request_id)
+        return TapJobRecord.model_validate(value) if value else None
+
+    def delete_tap_job(self, request_id: str) -> None:
+        self._delete("tap_job", request_id)
 
     def close(self) -> None:
         with self._lock:
