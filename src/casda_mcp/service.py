@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import math
 import uuid
 from collections import Counter
@@ -16,26 +18,38 @@ from casda_mcp.cache import TTLCache
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
 from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
-from casda_mcp.downloads import Downloader
+from casda_mcp.downloads import Downloader, parse_checksum, resolve_destination
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
+    AbortDataJobResponse,
     AbortTapJobResponse,
+    AuthStatusResponse,
     BuildAdqlResponse,
     CatalogueRow,
+    ChecksumResult,
+    CollectionMetadata,
     CollectionSummary,
     ColumnInfo,
     CreateManifestResponse,
+    DataJobResult,
+    DataJobResultsResponse,
+    DatalinkServiceDescriptor,
+    DeleteDataJobResponse,
     DeleteTapJobResponse,
     DescribeTableResponse,
+    DownloadJobResultsResponse,
     DownloadProductResponse,
+    DownloadResult,
     ForeignKeyInfo,
     GetArchiveStatusResponse,
     GetCollectionResponse,
+    GetDatalinkResponse,
     GetEventResponse,
     GetObservationResponse,
     GetProductResponse,
     GetProjectResponse,
     ImageRow,
+    JobKind,
     ListCapabilitiesResponse,
     ListCataloguesResponse,
     ListEventsResponse,
@@ -68,6 +82,7 @@ from casda_mcp.models import (
     TapQueryResponse,
     UwsResult,
     ValidateAdqlResponse,
+    VerifyFileResponse,
 )
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import observation_from_row, product_from_row, project_from_row
@@ -1700,7 +1715,7 @@ class CasdaService:
                 )
             self._reconcile_completed_staging(existing)
             return self._stage_response(existing, requested_at=requested_at, reused=True)
-        active = self.state.find_active_staging(normalized)
+        active = self.state.find_active_staging(normalized, job_kind="full_file")
         if active and not allow_duplicate:
             return self._stage_response(active, requested_at=requested_at, reused=True)
 
@@ -1733,7 +1748,9 @@ class CasdaService:
         datalinks = await asyncio.gather(
             *(
                 self.client.resolve_datalink(
-                    product.access_url or "", correlation_id=correlation_id
+                    product.access_url or "",
+                    correlation_id=correlation_id,
+                    service_name="async_service",
                 )
                 for product in products
             )
@@ -1767,6 +1784,7 @@ class CasdaService:
                 )
                 for product in products
             ],
+            job_kind="full_file",
         )
         # Store the confirmed archive job before requesting the RUN transition. If the
         # transition response is lost, callers can reconcile the known job instead of
@@ -1819,6 +1837,11 @@ class CasdaService:
         )
 
     async def get_staging_status(self, request_id: str) -> StagingStatusResponse:
+        """Alias of get_data_job for full-file and general data jobs."""
+
+        return await self.get_data_job(request_id)
+
+    async def get_data_job(self, request_id: str) -> StagingStatusResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
         request_id = validate_idempotency_key(request_id)
@@ -1826,8 +1849,7 @@ class CasdaService:
         if request is None:
             raise CasdaError(
                 "STAGING_REQUEST_NOT_FOUND",
-                "The staging request is not known to this server instance or configured "
-                "state database.",
+                "The data job is not known to this server instance or configured state database.",
                 details={"request_id": request_id},
             )
         self._reconcile_completed_staging(request)
@@ -1853,8 +1875,7 @@ class CasdaService:
         retry_guidance = None
         if active:
             retry_guidance = (
-                "Call casda_get_staging_status again later. This server does not poll "
-                "automatically."
+                "Call casda_get_data_job again later. This server does not poll automatically."
             )
         elif missing_results:
             retry_guidance = (
@@ -1870,12 +1891,343 @@ class CasdaService:
             download_ready=bool(request.products)
             and all(item.ready_for_download for item in request.products),
             retry_guidance=retry_guidance,
+            job_kind=request.job_kind,
             provenance=make_provenance(
                 request_timestamp=requested_at,
                 endpoint=request.job_url,
-                parameters={"request_id": request.request_id, "cache_bypassed": True},
+                parameters={
+                    "request_id": request.request_id,
+                    "job_kind": request.job_kind,
+                    "cache_bypassed": True,
+                },
                 request_id=request.request_id,
                 result_count=len(request.products),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_auth_status(self) -> AuthStatusResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        configured = self.settings.has_credentials
+        authenticated = False
+        if configured:
+            try:
+                await self.client.verify_authentication(correlation_id=correlation_id)
+                authenticated = True
+            except CasdaError as exc:
+                if exc.code not in {"AUTHENTICATION_FAILED", "AUTHORISATION_FAILED"}:
+                    raise
+                authenticated = False
+        return AuthStatusResponse(
+            credentials_configured=configured,
+            authenticated=authenticated,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.login_url,
+                parameters={"credentials_configured": configured},
+                result_count=1,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_datalink(self, product_id: str) -> GetDatalinkResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        product_id = normalize_product_id(product_id)
+        products = await self.get_products([product_id], correlation_id=correlation_id)
+        product = products[0]
+        if not product.access_url:
+            raise CasdaError(
+                "PRODUCT_UNAVAILABLE",
+                "CASDA did not provide Datalink access metadata for this product.",
+                details={"product_id": product_id},
+            )
+        await self.client.verify_authentication(correlation_id=correlation_id)
+        descriptors = await self.client.inspect_datalink(
+            product.access_url, correlation_id=correlation_id
+        )
+        services = [
+            DatalinkServiceDescriptor(
+                service_name=item.service_name,
+                service_url=item.service_url,
+                content_type=item.content_type,
+                size_bytes=item.size_bytes,
+                authenticated_id_present=item.authenticated_id_present,
+            )
+            for item in descriptors
+        ]
+        return GetDatalinkResponse(
+            product_id=product_id,
+            services=services,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=product.access_url,
+                parameters={"product_id": product_id},
+                result_count=len(services),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def create_cutout(
+        self,
+        product_id: str,
+        *,
+        circle: str | None = None,
+        polygon: str | None = None,
+        band: str | None = None,
+        channel: str | None = None,
+        pol: str | None = None,
+        coord: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> StageProductsResponse:
+        return await self._create_soda_data_job(
+            product_id,
+            job_kind="cutout",
+            service_name="cutout_service",
+            soda_params=self._soda_cutout_params(
+                circle=circle,
+                polygon=polygon,
+                band=band,
+                channel=channel,
+                pol=pol,
+                coord=coord,
+            ),
+            idempotency_key=idempotency_key,
+        )
+
+    async def create_spectrum(
+        self,
+        product_id: str,
+        *,
+        circle: str | None = None,
+        polygon: str | None = None,
+        band: str | None = None,
+        channel: str | None = None,
+        pol: str | None = None,
+        coord: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> StageProductsResponse:
+        return await self._create_soda_data_job(
+            product_id,
+            job_kind="spectrum",
+            service_name="spectrum_generation_service",
+            soda_params=self._soda_cutout_params(
+                circle=circle,
+                polygon=polygon,
+                band=band,
+                channel=channel,
+                pol=pol,
+                coord=coord,
+            ),
+            idempotency_key=idempotency_key,
+        )
+
+    async def get_data_job_results(self, request_id: str) -> DataJobResultsResponse:
+        status = await self.get_data_job(request_id)
+        request = self.state.get_staging(request_id)
+        assert request is not None
+        results = [
+            DataJobResult(
+                result_id=result.result_id,
+                mime_type=result.mime_type,
+                size_bytes=result.size_bytes,
+            )
+            for result in request.results
+        ]
+        return DataJobResultsResponse(
+            request_id=request.request_id,
+            status=request.status,
+            results=results,
+            provenance=status.provenance,
+        )
+
+    async def abort_data_job(self, request_id: str) -> AbortDataJobResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        request = self._require_data_job(request_id)
+        await self.client.abort_data_job(request.job_url, correlation_id=correlation_id)
+        archive = await self.client.get_staging_status(
+            request.job_url, correlation_id=correlation_id
+        )
+        request.status = archive.phase
+        request.failure_reason = archive.failure_reason
+        request.expiry_time = archive.destruction
+        request.results = archive.results
+        request.products = self._staging_items(request, request.status, request.failure_reason)
+        self.state.put_staging(request)
+        return AbortDataJobResponse(
+            request_id=request.request_id,
+            status=request.status,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=f"{request.job_url}/phase",
+                parameters={"request_id": request.request_id, "phase": "ABORT"},
+                result_count=1,
+                request_id=request.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def delete_data_job(self, request_id: str) -> DeleteDataJobResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        request = self._require_data_job(request_id)
+        await self.client.delete_data_job(request.job_url, correlation_id=correlation_id)
+        self.state.delete_staging(request.request_id)
+        return DeleteDataJobResponse(
+            request_id=request.request_id,
+            deleted=True,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=request.job_url,
+                parameters={"request_id": request.request_id, "action": "DELETE"},
+                result_count=0,
+                request_id=request.request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def download_job_results(
+        self,
+        request_id: str,
+        *,
+        verify_checksum: bool = True,
+        progress_callback: ProgressCallback | None = None,
+    ) -> DownloadJobResultsResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if not self.settings.enable_downloads:
+            raise CasdaError(
+                "DOWNLOADS_DISABLED", "Local downloads are disabled by server configuration."
+            )
+        status = await self.get_data_job(request_id)
+        request = self.state.get_staging(request_id)
+        assert request is not None
+        ready_ids = [item.product_id for item in request.products if item.ready_for_download]
+        if not ready_ids:
+            raise CasdaError(
+                "PRODUCT_NOT_READY",
+                "No ready results are available for this data job.",
+                retryable=status.status in {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED"},
+                details={"request_id": request_id, "status": status.status},
+            )
+        downloaded: list[DownloadResult] = []
+        failed_product_id: str | None = None
+        failure_reason: str | None = None
+        for index, product_id in enumerate(ready_ids):
+            try:
+
+                async def _progress(
+                    current: int, total: int | None, *, _index: int = index
+                ) -> None:
+                    if progress_callback is None:
+                        return
+                    # Report overall batch progress as completed files + in-file fraction.
+                    if total and total > 0:
+                        overall = _index + (current / total)
+                        await progress_callback(int(overall * 1000), len(ready_ids) * 1000)
+                    else:
+                        await progress_callback(_index, len(ready_ids))
+
+                response = await self.download_product(
+                    product_id,
+                    destination=None,
+                    verify_checksum=verify_checksum,
+                    progress_callback=_progress if progress_callback is not None else None,
+                )
+                if response.result is None:
+                    raise CasdaError(
+                        "INTERNAL_ERROR",
+                        "Download completed without a result payload.",
+                        details={"product_id": product_id},
+                    )
+                downloaded.append(response.result)
+            except CasdaError as exc:
+                failed_product_id = product_id
+                failure_reason = exc.message
+                break
+        return DownloadJobResultsResponse(
+            request_id=request_id,
+            results=downloaded,
+            failed_product_id=failed_product_id,
+            failure_reason=failure_reason,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint="local://download/job-results",
+                parameters={
+                    "request_id": request_id,
+                    "verify_checksum": verify_checksum,
+                    "ready_count": len(ready_ids),
+                    "downloaded_count": len(downloaded),
+                },
+                result_count=len(downloaded),
+                request_id=request_id,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def verify_file(self, path: str) -> VerifyFileResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if self.settings.download_dir is None:
+            raise CasdaError("DOWNLOADS_DISABLED", "Local downloads are not configured.")
+        download_root = self.settings.download_dir
+        target = resolve_destination(
+            download_root,
+            path,
+            Path(path).name,
+            allow_overwrite=True,
+        )
+        if not target.exists() or not target.is_file() or target.is_symlink():
+            return VerifyFileResponse(
+                local_path=str(target),
+                exists=False,
+                provenance=make_provenance(
+                    request_timestamp=requested_at,
+                    endpoint="local://verify-file",
+                    parameters={"path": path},
+                    result_count=0,
+                    correlation_id=correlation_id,
+                ),
+            )
+        size_bytes = target.stat().st_size
+        checksum = ChecksumResult()
+        checksum_path = Path(str(target) + ".checksum")
+        if checksum_path.is_file() and not checksum_path.is_symlink():
+            try:
+                spec = parse_checksum(checksum_path.read_text(encoding="utf-8"))
+            except CasdaError:
+                checksum = ChecksumResult(verified=False)
+            else:
+                hasher = hashlib.new(spec.algorithm)
+                with target.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        hasher.update(chunk)
+                actual = hasher.hexdigest().lower()
+                checksum = ChecksumResult(
+                    algorithm=spec.algorithm,
+                    expected=spec.digest,
+                    actual=actual,
+                    verified=hmac.compare_digest(actual, spec.digest),
+                )
+                if not checksum.verified:
+                    raise CasdaError(
+                        "CHECKSUM_MISMATCH",
+                        "The local file did not match its checksum sidecar.",
+                        details={"algorithm": spec.algorithm, "path": str(target)},
+                    )
+        return VerifyFileResponse(
+            local_path=str(target),
+            exists=True,
+            size_bytes=size_bytes,
+            content_length_verified=True,
+            checksum=checksum,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint="local://verify-file",
+                parameters={"path": path},
+                result_count=1,
                 correlation_id=correlation_id,
             ),
         )
@@ -1991,6 +2343,12 @@ class CasdaService:
                     f"The archive artifact URL was omitted for product {product.product_id}; "
                     "CASDA URLs may be bearer credentials even when they have no query string."
                 )
+            collection_metadata = CollectionMetadata(
+                obs_collection=product.collection,
+                facility_name=product.facility_name,
+                release_date_min=product.release_date,
+                release_date_max=product.release_date,
+            )
             manifest_products.append(
                 ManifestProduct(
                     product=product,
@@ -1998,8 +2356,10 @@ class CasdaService:
                     checksum_algorithm=checksum_algorithm,
                     staging_request_id=ready.request_id if ready else None,
                     download_url=download_url,
+                    collection_metadata=collection_metadata,
                 )
             )
+        collections = self._manifest_collections(manifest_products)
         parameters = {
             "product_ids": normalized,
             "source_name": source_name,
@@ -2018,6 +2378,7 @@ class CasdaService:
             "source_name": source_name,
             "workflow_name": workflow_name,
             "products": [item.model_dump(mode="json") for item in manifest_products],
+            "collections": [item.model_dump(mode="json") for item in collections],
             "original_search_criteria": search_criteria,
         }
         manifest = Manifest(
@@ -2026,6 +2387,7 @@ class CasdaService:
             source_name=source_name,
             workflow_name=workflow_name,
             products=manifest_products,
+            collections=collections,
             original_search_criteria=search_criteria,
             provenance=provenance,
             server_version=provenance.server_version,
@@ -2077,12 +2439,14 @@ class CasdaService:
             status=request.status,
             products=request.products,
             reused=reused,
+            job_kind=request.job_kind,
             provenance=make_provenance(
                 request_timestamp=requested_at,
                 endpoint=request.job_url,
                 parameters={
                     "product_ids": request.product_ids,
                     "idempotency_key": request.idempotency_key,
+                    "job_kind": request.job_kind,
                     "reused": reused,
                 },
                 request_id=request.request_id,
@@ -2265,6 +2629,27 @@ class CasdaService:
             if checksum_result is not None:
                 claimed_ids.add(checksum_result.result_id)
 
+        # Cutout/spectrum jobs often return a single generated result whose ID is
+        # not the ObsCore publisher DID. Assign it only when uniqueness is clear.
+        if request.job_kind in {"cutout", "spectrum"} and len(request.product_ids) == 1:
+            product_id = request.product_ids[0]
+            if product_id not in assignments:
+                candidates = [
+                    result
+                    for result in results
+                    if result.result_id not in claimed_ids
+                    and not result.result_id.endswith(".checksum")
+                ]
+                if len(candidates) == 1:
+                    data_result = candidates[0]
+                    checksum_result = by_id.get(f"{data_result.result_id}.checksum")
+                    if checksum_result is not None and checksum_result.result_id in claimed_ids:
+                        checksum_result = None
+                    assignments[product_id] = (data_result, checksum_result)
+                    claimed_ids.add(data_result.result_id)
+                    if checksum_result is not None:
+                        claimed_ids.add(checksum_result.result_id)
+
         selected_hrefs = [
             result.href
             for data_result, checksum_result in assignments.values()
@@ -2302,6 +2687,209 @@ class CasdaService:
         if not normalized or len(normalized) > 160 or any(ord(char) < 32 for char in value):
             raise CasdaError("VALIDATION_ERROR", f"{field} must be 1 to 160 printable characters.")
         return normalized
+
+    @staticmethod
+    def _manifest_collections(
+        products: list[ManifestProduct],
+    ) -> list[CollectionMetadata]:
+        by_collection: dict[str, CollectionMetadata] = {}
+        for item in products:
+            meta = item.collection_metadata
+            if meta is None or not meta.obs_collection:
+                continue
+            existing = by_collection.get(meta.obs_collection)
+            if existing is None:
+                by_collection[meta.obs_collection] = CollectionMetadata(
+                    obs_collection=meta.obs_collection,
+                    facility_name=meta.facility_name,
+                    release_date_min=meta.release_date_min,
+                    release_date_max=meta.release_date_max,
+                )
+                continue
+            if existing.facility_name is None:
+                existing.facility_name = meta.facility_name
+            elif meta.facility_name is not None and existing.facility_name != meta.facility_name:
+                existing.facility_name = None
+            if meta.release_date_min is not None and (
+                existing.release_date_min is None
+                or meta.release_date_min < existing.release_date_min
+            ):
+                existing.release_date_min = meta.release_date_min
+            if meta.release_date_max is not None and (
+                existing.release_date_max is None
+                or meta.release_date_max > existing.release_date_max
+            ):
+                existing.release_date_max = meta.release_date_max
+        return [by_collection[key] for key in sorted(by_collection)]
+
+    def _require_data_job(self, request_id: str) -> StagingRequest:
+        request_id = validate_idempotency_key(request_id)
+        request = self.state.get_staging(request_id)
+        if request is None:
+            raise CasdaError(
+                "STAGING_REQUEST_NOT_FOUND",
+                "The data job is not known to this server instance or configured state database.",
+                details={"request_id": request_id},
+            )
+        return request
+
+    @staticmethod
+    def _soda_cutout_params(
+        *,
+        circle: str | None,
+        polygon: str | None,
+        band: str | None,
+        channel: str | None,
+        pol: str | None,
+        coord: str | None,
+    ) -> list[tuple[str, str]]:
+        params: list[tuple[str, str]] = []
+        if circle is not None:
+            params.append(("CIRCLE", validate_vo_param(circle, field="CIRCLE")))
+        if polygon is not None:
+            params.append(("POLYGON", validate_vo_param(polygon, field="POLYGON")))
+        if band is not None:
+            params.append(("BAND", validate_vo_param(band, field="BAND")))
+        if channel is not None:
+            params.append(("CHANNEL", validate_vo_param(channel, field="CHANNEL")))
+        if pol is not None:
+            params.append(("POL", validate_vo_param(pol, field="POL")))
+        if coord is not None:
+            params.append(("COORD", validate_vo_param(coord, field="COORD")))
+        if not params:
+            raise ValidationError(
+                "At least one SODA constraint is required "
+                "(CIRCLE, POLYGON, BAND, CHANNEL, POL, or COORD)."
+            )
+        return params
+
+    async def _create_soda_data_job(
+        self,
+        product_id: str,
+        *,
+        job_kind: JobKind,
+        service_name: str,
+        soda_params: list[tuple[str, str]],
+        idempotency_key: str | None,
+    ) -> StageProductsResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if not self.settings.enable_staging:
+            raise CasdaError(
+                "STAGING_DISABLED", "Archive-side staging is disabled by server configuration."
+            )
+        normalized = normalize_product_ids([product_id])
+        key = validate_idempotency_key(idempotency_key) if idempotency_key else str(uuid.uuid4())
+        param_fingerprint = canonical_hash({"service_name": service_name, "params": soda_params})
+        async with self._staging_submission_lock:
+            existing = self.state.get_staging_by_idempotency(key)
+            if existing:
+                if (
+                    set(existing.product_ids) != set(normalized)
+                    or existing.job_kind != job_kind
+                    or existing.param_fingerprint != param_fingerprint
+                ):
+                    raise CasdaError(
+                        "IDEMPOTENCY_CONFLICT",
+                        "The idempotency key was already used with different job parameters.",
+                    )
+                self._reconcile_completed_staging(existing)
+                return self._stage_response(existing, requested_at=requested_at, reused=True)
+            active = self.state.find_active_staging(
+                normalized, job_kind=job_kind, param_fingerprint=param_fingerprint
+            )
+            if active:
+                return self._stage_response(active, requested_at=requested_at, reused=True)
+
+            products = await self.get_products(normalized, correlation_id=correlation_id)
+            product = products[0]
+            if not product.access_url:
+                raise CasdaError(
+                    "PRODUCT_UNAVAILABLE",
+                    "CASDA did not provide Datalink access metadata for this product.",
+                    details={"product_id": product.product_id},
+                )
+            await self.client.verify_authentication(correlation_id=correlation_id)
+            access = await self.client.resolve_datalink(
+                product.access_url,
+                correlation_id=correlation_id,
+                service_name=service_name,
+            )
+            job_url = await self.client.create_soda_job(
+                access.service_url,
+                [access.authenticated_id_token],
+                extra_params=soda_params,
+                correlation_id=correlation_id,
+            )
+            request_id = unquote(urlparse(job_url).path.rstrip("/").rsplit("/", 1)[-1])
+            validate_idempotency_key(request_id)
+            request = StagingRequest(
+                request_id=request_id,
+                idempotency_key=key,
+                job_url=job_url,
+                submitted_at=utc_now(),
+                status="PENDING",
+                product_ids=normalized,
+                filenames={product.product_id: product.filename},
+                products=[
+                    StagingItem(
+                        product_id=product.product_id,
+                        status="PENDING",
+                        status_source="archive_request",
+                    )
+                ],
+                job_kind=job_kind,
+                param_fingerprint=param_fingerprint,
+            )
+            self.state.put_staging(request)
+            self.metrics.increment("staging_submission_count")
+            try:
+                await self.client.start_staging_job(job_url, correlation_id=correlation_id)
+            except Exception as exc:
+                archive_code = exc.code if isinstance(exc, CasdaError) else "INTERNAL_ERROR"
+                request.status = "UNKNOWN"
+                request.failure_reason = (
+                    "The archive job was created, but its RUN transition could not be confirmed."
+                )
+                request.products = self._staging_items(
+                    request, request.status, request.failure_reason
+                )
+                self.state.put_staging(request)
+                raise CasdaError(
+                    "STAGING_START_UNCONFIRMED",
+                    "The CASDA data job was created, but starting it could not be confirmed. "
+                    "Inspect the stored request before submitting another archive job.",
+                    retryable=True,
+                    details={
+                        "request_id": request_id,
+                        "idempotency_key": key,
+                        "archive_error": archive_code,
+                    },
+                ) from exc
+            try:
+                archive_status = await self.client.get_staging_status(
+                    job_url, correlation_id=correlation_id
+                )
+                request.status = archive_status.phase
+                request.failure_reason = archive_status.failure_reason
+                request.expiry_time = archive_status.destruction
+                request.results = archive_status.results
+                request.result_urls = []
+            except CasdaError:
+                request.status = "UNKNOWN"
+                request.failure_reason = (
+                    "The job was submitted, but its initial archive status was unavailable."
+                )
+            if request.status == "COMPLETED":
+                self._store_completed_staging(request)
+            else:
+                request.products = self._staging_items(
+                    request, request.status, request.failure_reason
+                )
+                self.state.put_staging(request)
+            return self._stage_response(
+                request, requested_at=requested_at, correlation_id=correlation_id
+            )
 
     async def _cached_tap_query(
         self, query: str, *, max_records: int, correlation_id: str

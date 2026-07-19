@@ -22,8 +22,10 @@ from casda_mcp.models import ArchiveAvailability, Capability, ObservationEvent
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import (
     DatalinkAccess,
+    DatalinkDescriptor,
     UwsStatus,
     parse_datalink_access,
+    parse_datalink_descriptors,
     parse_observation_events,
     parse_sia1_surveys,
     parse_tap_csv,
@@ -218,7 +220,13 @@ class CasdaClient:
             correlation_id=correlation_id,
         )
 
-    async def resolve_datalink(self, access_url: str, *, correlation_id: str) -> DatalinkAccess:
+    async def resolve_datalink(
+        self,
+        access_url: str,
+        *,
+        correlation_id: str,
+        service_name: str = "async_service",
+    ) -> DatalinkAccess:
         self.validate_archive_url(access_url)
         if sanitize_url(access_url).rstrip("/") != self.settings.datalink_url.rstrip("/"):
             raise CasdaError(
@@ -234,9 +242,11 @@ class CasdaClient:
             authenticated=True,
             correlation_id=correlation_id,
         )
-        result = parse_datalink_access(response.content)
+        result = parse_datalink_access(response.content, service_name=service_name)
         self.validate_archive_url(result.service_url)
-        if result.service_url.rstrip("/") != self.settings.soda_url.rstrip("/"):
+        if service_name == "async_service" and result.service_url.rstrip(
+            "/"
+        ) != self.settings.soda_url.rstrip("/"):
             raise CasdaError(
                 "UNSAFE_ARCHIVE_URL",
                 "CASDA returned an unexpected asynchronous staging endpoint.",
@@ -244,16 +254,57 @@ class CasdaClient:
             )
         return result
 
+    async def inspect_datalink(
+        self, access_url: str, *, correlation_id: str
+    ) -> list[DatalinkDescriptor]:
+        """Return redacted DataLink descriptors for inspection (tokens never exposed)."""
+
+        self.validate_archive_url(access_url)
+        if sanitize_url(access_url).rstrip("/") != self.settings.datalink_url.rstrip("/"):
+            raise CasdaError(
+                "UNSAFE_ARCHIVE_URL",
+                "CASDA returned an unexpected Datalink endpoint.",
+                details={"url": sanitize_url(access_url)},
+            )
+        response = await self.request(
+            "GET",
+            access_url,
+            headers={"Accept": DATALINK_ACCEPT},
+            safe_to_retry=True,
+            authenticated=True,
+            correlation_id=correlation_id,
+        )
+        descriptors = parse_datalink_descriptors(response.content)
+        for descriptor in descriptors:
+            if descriptor.service_url is not None:
+                self.validate_archive_url(descriptor.service_url)
+        return descriptors
+
     async def create_staging_job(
         self, service_url: str, tokens: list[str], *, correlation_id: str
     ) -> str:
-        """Create one SODA job. This non-idempotent request is never automatically retried."""
+        """Create one full-file SODA job. This non-idempotent request is never retried."""
+
+        return await self.create_soda_job(service_url, tokens, correlation_id=correlation_id)
+
+    async def create_soda_job(
+        self,
+        service_url: str,
+        id_tokens: list[str],
+        *,
+        extra_params: list[tuple[str, str]] | None = None,
+        correlation_id: str,
+    ) -> str:
+        """Create one SODA/UWS job. This non-idempotent request is never automatically retried."""
 
         self.validate_archive_url(service_url)
+        params: list[tuple[str, str]] = [("ID", token) for token in id_tokens]
+        if extra_params:
+            params.extend(extra_params)
         response = await self.request(
             "POST",
             service_url,
-            params=[("ID", token) for token in tokens],
+            params=params,
             headers={"Accept": UWS_ACCEPT},
             safe_to_retry=False,
             authenticated=True,
@@ -286,6 +337,33 @@ class CasdaClient:
             correlation_id=correlation_id,
         )
         return parse_uws_status(response.content)
+
+    async def abort_data_job(self, job_url: str, *, correlation_id: str) -> None:
+        """Abort one SODA/UWS data job. This non-idempotent request is never retried."""
+
+        self.validate_archive_url(job_url)
+        await self.request(
+            "POST",
+            f"{job_url}/phase",
+            data={"PHASE": "ABORT"},
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            authenticated=True,
+            correlation_id=correlation_id,
+        )
+
+    async def delete_data_job(self, job_url: str, *, correlation_id: str) -> None:
+        """Delete one SODA/UWS data job. This non-idempotent request is never retried."""
+
+        self.validate_archive_url(job_url)
+        await self.request(
+            "DELETE",
+            job_url,
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=False,
+            authenticated=True,
+            correlation_id=correlation_id,
+        )
 
     async def create_tap_job(self, query: str, *, max_records: int, correlation_id: str) -> str:
         """Create one async TAP job. This non-idempotent request is never automatically retried."""

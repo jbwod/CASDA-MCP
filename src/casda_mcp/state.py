@@ -132,7 +132,13 @@ class StateStore:
         pointer = self._get("idempotency", key)
         return self.get_staging(pointer["request_id"]) if pointer else None
 
-    def find_active_staging(self, product_ids: list[str]) -> StagingRequest | None:
+    def find_active_staging(
+        self,
+        product_ids: list[str],
+        *,
+        job_kind: str = "full_file",
+        param_fingerprint: str | None = None,
+    ) -> StagingRequest | None:
         requested = set(product_ids)
         for value in self._all("staging"):
             staging = StagingRequest.model_validate(value)
@@ -141,9 +147,43 @@ class StateStore:
                 staging.status in {"PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "UNKNOWN"}
                 and (expiry is None or expiry > datetime.now(timezone.utc))
                 and set(staging.product_ids) == requested
+                and staging.job_kind == job_kind
+                and staging.param_fingerprint == param_fingerprint
             ):
                 return staging
         return None
+
+    def delete_staging(self, request_id: str) -> None:
+        request = self.get_staging(request_id)
+        if request is None:
+            return
+        with self._lock:
+            if self._connection is None:
+                self._memory.pop(("staging", request_id), None)
+                self._memory.pop(("idempotency", request.idempotency_key), None)
+                for product_id in request.product_ids:
+                    ready = self._memory.get(("ready", product_id))
+                    if ready is not None and ready.get("request_id") == request_id:
+                        self._memory.pop(("ready", product_id), None)
+                return
+            with self._connection:
+                self._connection.execute(
+                    "DELETE FROM state WHERE kind='staging' AND key=?", (request_id,)
+                )
+                self._connection.execute(
+                    "DELETE FROM state WHERE kind='idempotency' AND key=?",
+                    (request.idempotency_key,),
+                )
+                for product_id in request.product_ids:
+                    row = self._connection.execute(
+                        "SELECT value_json FROM state WHERE kind='ready' AND key=?",
+                        (product_id,),
+                    ).fetchone()
+                    if row is not None and json.loads(row[0]).get("request_id") == request_id:
+                        self._connection.execute(
+                            "DELETE FROM state WHERE kind='ready' AND key=?",
+                            (product_id,),
+                        )
 
     def put_ready(self, artifact: ReadyArtifact) -> None:
         self.put_ready_many([artifact])

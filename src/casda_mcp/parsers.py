@@ -418,10 +418,32 @@ def parse_observation_events(content: bytes) -> list[ObservationEvent]:
     return events
 
 
+DATALINK_SERVICE_NAMES = frozenset(
+    {
+        "async_service",
+        "cutout_service",
+        "spectrum_generation_service",
+        "pawsey_async_service",
+    }
+)
+
+
 @dataclass(slots=True)
 class DatalinkAccess:
     service_url: str
     authenticated_id_token: str
+
+
+@dataclass(slots=True)
+class DatalinkDescriptor:
+    """Inspection-safe DataLink access descriptor (tokens never included)."""
+
+    service_name: str
+    service_url: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    authenticated_id_present: bool = False
+    authenticated_id_token: str | None = field(default=None, repr=False)
 
 
 def _plain(value: Any) -> str | None:
@@ -532,33 +554,96 @@ def parse_sia1_surveys(content: bytes) -> list[dict[str, str | None]]:
     return surveys
 
 
-def parse_datalink_access(content: bytes, service_name: str = "async_service") -> DatalinkAccess:
+def parse_datalink_descriptors(content: bytes) -> list[DatalinkDescriptor]:
+    """Parse all advertised DataLink access descriptors without requiring one service."""
+
     try:
         votable = parse_votable(io.BytesIO(content), verify="warn")
     except Exception as exc:
         raise CasdaError(
             "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an invalid Datalink VOTable."
         ) from exc
-    service_url: str | None = None
-    token: str | None = None
+    service_urls: dict[str, str | None] = {}
     for resource in votable.resources:
-        if resource.type == "meta" and service_name == resource.ID:
+        resource_id = _plain(resource.ID) if resource.ID is not None else None
+        if resource.type == "meta" and resource_id:
+            access_url: str | None = None
             for param in resource.params:
                 if param.name == "accessURL":
-                    service_url = _plain(param.value)
-        if resource.type == "results" and resource.tables:
-            names = {field.name for field in resource.tables[0].fields}
-            if {"service_def", "authenticated_id_token"}.issubset(names):
-                for result in resource.tables[0].array:
-                    if _plain(result["service_def"]) == service_name:
-                        token = _plain(result["authenticated_id_token"])
-                        break
-    if not service_url or not token:
+                    access_url = _plain(param.value)
+            service_urls[resource_id] = access_url
+
+    descriptors: dict[str, DatalinkDescriptor] = {}
+    for resource in votable.resources:
+        if resource.type != "results" or not resource.tables:
+            continue
+        table = resource.tables[0]
+        names = {field.name for field in table.fields}
+        if "service_def" not in names:
+            continue
+        array = table.array
+        if array is None:
+            continue
+        for result in array:
+            service_name = _plain(result["service_def"])
+            if not service_name:
+                continue
+            token = (
+                _plain(result["authenticated_id_token"])
+                if "authenticated_id_token" in names
+                else None
+            )
+            content_type = _plain(result["content_type"]) if "content_type" in names else None
+            size_text = _plain(result["content_length"]) if "content_length" in names else None
+            if size_text is None and "size" in names:
+                size_text = _plain(result["size"])
+            size_bytes: int | None = None
+            if size_text is not None:
+                try:
+                    size_bytes = int(size_text)
+                except ValueError as exc:
+                    raise CasdaError(
+                        "MALFORMED_ARCHIVE_RESPONSE",
+                        "CASDA returned an invalid DataLink content length.",
+                    ) from exc
+                if size_bytes < 0:
+                    raise CasdaError(
+                        "MALFORMED_ARCHIVE_RESPONSE",
+                        "CASDA returned an invalid DataLink content length.",
+                    )
+            descriptors[service_name] = DatalinkDescriptor(
+                service_name=service_name,
+                service_url=service_urls.get(service_name),
+                content_type=content_type,
+                size_bytes=size_bytes,
+                authenticated_id_present=bool(token),
+                authenticated_id_token=token,
+            )
+
+    for service_name, service_url in service_urls.items():
+        if service_name not in descriptors and (
+            service_name in DATALINK_SERVICE_NAMES or service_url is not None
+        ):
+            descriptors[service_name] = DatalinkDescriptor(
+                service_name=service_name,
+                service_url=service_url,
+            )
+    return sorted(descriptors.values(), key=lambda item: item.service_name)
+
+
+def parse_datalink_access(content: bytes, service_name: str = "async_service") -> DatalinkAccess:
+    descriptors = parse_datalink_descriptors(content)
+    match = next((item for item in descriptors if item.service_name == service_name), None)
+    if match is None or not match.service_url or not match.authenticated_id_token:
         raise CasdaError(
             "AUTHORISATION_FAILED",
             "CASDA did not provide an authorised asynchronous staging service for this product.",
+            details={"service_name": service_name},
         )
-    return DatalinkAccess(service_url=service_url, authenticated_id_token=token)
+    return DatalinkAccess(
+        service_url=match.service_url,
+        authenticated_id_token=match.authenticated_id_token,
+    )
 
 
 @dataclass(slots=True)

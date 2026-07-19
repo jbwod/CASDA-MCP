@@ -136,6 +136,7 @@ class Pagination(BaseModel):
 StagingState = Literal[
     "PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "COMPLETED", "ERROR", "ABORTED", "UNKNOWN"
 ]
+JobKind = Literal["full_file", "cutout", "spectrum"]
 
 
 class StagingItem(BaseModel):
@@ -151,6 +152,14 @@ class UwsResult(BaseModel):
 
     result_id: str
     href: str = Field(repr=False)
+    mime_type: str | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+
+
+class DataJobResult(BaseModel):
+    """Safe UWS result metadata without opaque download URLs."""
+
+    result_id: str
     mime_type: str | None = None
     size_bytes: int | None = Field(default=None, ge=0)
 
@@ -171,6 +180,17 @@ class StagingRequest(BaseModel):
     # still be reconciled through the conservative filename fallback.
     result_urls: list[str] = Field(default_factory=list, repr=False)
     reused: bool = False
+    job_kind: JobKind = "full_file"
+    param_fingerprint: str | None = None
+
+
+class CollectionMetadata(BaseModel):
+    """Collection-level metadata for manifests (never includes DOI artifact URLs)."""
+
+    obs_collection: str | None = None
+    facility_name: str | None = None
+    release_date_min: datetime | None = None
+    release_date_max: datetime | None = None
 
 
 class ReadyArtifact(BaseModel):
@@ -205,6 +225,7 @@ class ManifestProduct(BaseModel):
     checksum_algorithm: str | None = None
     staging_request_id: str | None = None
     download_url: str | None = None
+    collection_metadata: CollectionMetadata | None = None
 
 
 class Manifest(BaseModel):
@@ -214,6 +235,7 @@ class Manifest(BaseModel):
     source_name: str | None = None
     workflow_name: str | None = None
     products: list[ManifestProduct]
+    collections: list[CollectionMetadata] = Field(default_factory=list)
     original_search_criteria: list[dict[str, Any]] = Field(default_factory=list)
     provenance: Provenance
     server_version: str
@@ -248,6 +270,7 @@ class StageProductsResponse(BaseModel):
     status: StagingState | None = None
     products: list[StagingItem] = Field(default_factory=list)
     reused: bool = False
+    job_kind: JobKind = "full_file"
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
 
@@ -260,12 +283,78 @@ class StagingStatusResponse(BaseModel):
     expiry_time: datetime | None = None
     download_ready: bool = False
     retry_guidance: str | None = None
+    job_kind: JobKind | None = None
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
 
 
 class DownloadProductResponse(BaseModel):
     result: DownloadResult | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DatalinkServiceDescriptor(BaseModel):
+    """Safe DataLink access descriptor; authenticated ID tokens are never included."""
+
+    service_name: str
+    service_url: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    authenticated_id_present: bool = False
+
+
+class AuthStatusResponse(BaseModel):
+    credentials_configured: bool
+    authenticated: bool
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class GetDatalinkResponse(BaseModel):
+    product_id: str
+    services: list[DatalinkServiceDescriptor] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DataJobResultsResponse(BaseModel):
+    request_id: str
+    status: StagingState
+    results: list[DataJobResult] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class AbortDataJobResponse(BaseModel):
+    request_id: str
+    status: StagingState
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DeleteDataJobResponse(BaseModel):
+    request_id: str
+    deleted: bool = True
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DownloadJobResultsResponse(BaseModel):
+    request_id: str
+    results: list[DownloadResult] = Field(default_factory=list)
+    failed_product_id: str | None = None
+    failure_reason: str | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class VerifyFileResponse(BaseModel):
+    local_path: str
+    exists: bool
+    size_bytes: int | None = None
+    content_length_verified: bool = False
+    checksum: ChecksumResult = Field(default_factory=ChecksumResult)
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
 

@@ -44,7 +44,13 @@ class StagingClient:
     async def verify_authentication(self, *, correlation_id: str) -> None:
         return None
 
-    async def resolve_datalink(self, access_url: str, *, correlation_id: str) -> DatalinkAccess:
+    async def resolve_datalink(
+        self,
+        access_url: str,
+        *,
+        correlation_id: str,
+        service_name: str = "async_service",
+    ) -> DatalinkAccess:
         return DatalinkAccess(
             service_url="https://casda.csiro.au/casda_data_access/data/async",
             authenticated_id_token=access_url.rsplit("=", 1)[-1] + "-token",
@@ -52,6 +58,16 @@ class StagingClient:
 
     async def create_staging_job(
         self, service_url: str, tokens: list[str], *, correlation_id: str
+    ) -> str:
+        return await self.create_soda_job(service_url, tokens, correlation_id=correlation_id)
+
+    async def create_soda_job(
+        self,
+        service_url: str,
+        id_tokens: list[str],
+        *,
+        extra_params: list[tuple[str, str]] | None = None,
+        correlation_id: str,
     ) -> str:
         self.created += 1
         return f"https://casda.csiro.au/casda_data_access/data/async/job-{self.created}"
@@ -77,8 +93,13 @@ class BlockingCreateClient(StagingClient):
         self.create_entered = asyncio.Event()
         self.release_create = asyncio.Event()
 
-    async def create_staging_job(
-        self, service_url: str, tokens: list[str], *, correlation_id: str
+    async def create_soda_job(
+        self,
+        service_url: str,
+        id_tokens: list[str],
+        *,
+        extra_params: list[tuple[str, str]] | None = None,
+        correlation_id: str,
     ) -> str:
         self.created += 1
         job_number = self.created

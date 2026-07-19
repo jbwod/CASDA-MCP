@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" version="1.3">
+  <RESOURCE type="results">
+    <TABLE>
+      <FIELD datatype="char" arraysize="*" name="service_def"/>
+      <FIELD datatype="char" arraysize="*" name="authenticated_id_token"/>
+      <FIELD datatype="char" arraysize="*" name="content_type"/>
+      <FIELD datatype="long" name="content_length"/>
+      <DATA>
+        <TABLEDATA>
+          <TR>
+            <TD>async_service</TD>
+            <TD>secret-async-token</TD>
+            <TD>application/fits</TD>
+            <TD>1024</TD>
+          </TR>
+          <TR>
+            <TD>cutout_service</TD>
+            <TD>secret-cutout-token</TD>
+            <TD>application/fits</TD>
+            <TD>256</TD>
+          </TR>
+          <TR>
+            <TD>spectrum_generation_service</TD>
+            <TD>secret-spectrum-token</TD>
+            <TD>application/fits</TD>
+            <TD>128</TD>
+          </TR>
+          <TR>
+            <TD>pawsey_async_service</TD>
+            <TD>secret-pawsey-token</TD>
+            <TD>application/fits</TD>
+            <TD>2048</TD>
+          </TR>
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+  <RESOURCE ID="async_service" type="meta">
+    <PARAM datatype="char" arraysize="*" name="accessURL"
+      value="https://casda.csiro.au/casda_data_access/data/async"/>
+  </RESOURCE>
+  <RESOURCE ID="cutout_service" type="meta">
+    <PARAM datatype="char" arraysize="*" name="accessURL"
+      value="https://casda.csiro.au/casda_data_access/data/cutout"/>
+  </RESOURCE>
+  <RESOURCE ID="spectrum_generation_service" type="meta">
+    <PARAM datatype="char" arraysize="*" name="accessURL"
+      value="https://casda.csiro.au/casda_data_access/data/spectrum"/>
+  </RESOURCE>
+  <RESOURCE ID="pawsey_async_service" type="meta">
+    <PARAM datatype="char" arraysize="*" name="accessURL"
+      value="https://ingest.pawsey.org.au/casda_data_access/data/async"/>
+  </RESOURCE>
+</VOTABLE>

@@ -19,14 +19,20 @@ from starlette.routing import Route
 from casda_mcp import __version__
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
+    AbortDataJobResponse,
     AbortTapJobResponse,
+    AuthStatusResponse,
     BuildAdqlResponse,
     CreateManifestResponse,
+    DataJobResultsResponse,
+    DeleteDataJobResponse,
     DeleteTapJobResponse,
     DescribeTableResponse,
+    DownloadJobResultsResponse,
     DownloadProductResponse,
     GetArchiveStatusResponse,
     GetCollectionResponse,
+    GetDatalinkResponse,
     GetObservationResponse,
     GetProductResponse,
     GetProjectResponse,
@@ -49,6 +55,7 @@ from casda_mcp.models import (
     TapJobStatusResponse,
     TapQueryResponse,
     ValidateAdqlResponse,
+    VerifyFileResponse,
 )
 from casda_mcp.query import SearchCriteria
 from casda_mcp.service import CasdaService
@@ -924,6 +931,227 @@ def create_mcp_server(
                 project_code=project_code,
                 event_type=event_type,
             )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA authentication status", annotations=_READ_ONLY)
+    async def casda_get_auth_status() -> AuthStatusResponse:
+        """Report whether credentials are configured and currently authenticate to CASDA.
+
+        Never returns username, password, or other secret material.
+        """
+        try:
+            return await service.get_auth_status()
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Inspect CASDA DataLink", annotations=_READ_ONLY)
+    async def casda_get_datalink(
+        product_id: Annotated[
+            str, Field(description="Exact CASDA product identifier to inspect via DataLink.")
+        ],
+    ) -> GetDatalinkResponse:
+        """Inspect DataLink access descriptors for one product.
+
+        Returns service names, content types, and sizes. Opaque authenticated ID tokens
+        are redacted and never returned.
+        """
+        try:
+            return await service.get_datalink(product_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Create CASDA cutout job", annotations=_STATE_CHANGING)
+    async def casda_create_cutout(
+        product_id: Annotated[str, Field(description="Exact CASDA product identifier.")],
+        circle: Annotated[
+            str | None,
+            Field(description="SODA CIRCLE constraint: 'ra_deg dec_deg radius_deg'."),
+        ] = None,
+        polygon: Annotated[
+            str | None,
+            Field(description="SODA POLYGON constraint as space-separated ra/dec pairs."),
+        ] = None,
+        band: Annotated[
+            str | None,
+            Field(description="SODA BAND constraint in metres (wavelength)."),
+        ] = None,
+        channel: Annotated[str | None, Field(description="SODA CHANNEL constraint.")] = None,
+        pol: Annotated[str | None, Field(description="SODA POL constraint.")] = None,
+        coord: Annotated[
+            str | None, Field(description="SODA COORD system, for example ICRS.")
+        ] = None,
+        idempotency_key: Annotated[
+            str | None,
+            Field(description="Caller-supplied idempotency key; a UUID is generated when omitted."),
+        ] = None,
+    ) -> StageProductsResponse:
+        """Create one cutout SODA job via the DataLink cutout_service descriptor.
+
+        Requires CASDA_ENABLE_STAGING and credentials. Never auto-retries create/start.
+        """
+        try:
+            return await service.create_cutout(
+                product_id,
+                circle=circle,
+                polygon=polygon,
+                band=band,
+                channel=channel,
+                pol=pol,
+                coord=coord,
+                idempotency_key=idempotency_key,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Create CASDA spectrum job", annotations=_STATE_CHANGING)
+    async def casda_create_spectrum(
+        product_id: Annotated[str, Field(description="Exact CASDA product identifier.")],
+        circle: Annotated[
+            str | None,
+            Field(description="SODA CIRCLE constraint: 'ra_deg dec_deg radius_deg'."),
+        ] = None,
+        polygon: Annotated[
+            str | None,
+            Field(description="SODA POLYGON constraint as space-separated ra/dec pairs."),
+        ] = None,
+        band: Annotated[
+            str | None,
+            Field(description="SODA BAND constraint in metres (wavelength)."),
+        ] = None,
+        channel: Annotated[str | None, Field(description="SODA CHANNEL constraint.")] = None,
+        pol: Annotated[str | None, Field(description="SODA POL constraint.")] = None,
+        coord: Annotated[
+            str | None, Field(description="SODA COORD system, for example ICRS.")
+        ] = None,
+        idempotency_key: Annotated[
+            str | None,
+            Field(description="Caller-supplied idempotency key; a UUID is generated when omitted."),
+        ] = None,
+    ) -> StageProductsResponse:
+        """Create one spectrum-generation SODA job via spectrum_generation_service.
+
+        Requires CASDA_ENABLE_STAGING and credentials. Never auto-retries create/start.
+        """
+        try:
+            return await service.create_spectrum(
+                product_id,
+                circle=circle,
+                polygon=polygon,
+                band=band,
+                channel=channel,
+                pol=pol,
+                coord=coord,
+                idempotency_key=idempotency_key,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA data job", annotations=_READ_ONLY)
+    async def casda_get_data_job(
+        request_id: Annotated[
+            str, Field(description="Data job identifier returned by this server.")
+        ],
+    ) -> StagingStatusResponse:
+        """Perform one uncached status check for a data job created by this server."""
+        try:
+            return await service.get_data_job(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA data job results", annotations=_READ_ONLY)
+    async def casda_get_data_job_results(
+        request_id: Annotated[
+            str, Field(description="Data job identifier returned by this server.")
+        ],
+    ) -> DataJobResultsResponse:
+        """List safe result metadata for a data job without opaque download URLs."""
+        try:
+            return await service.get_data_job_results(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Abort CASDA data job", annotations=_STATE_CHANGING)
+    async def casda_abort_data_job(
+        request_id: Annotated[
+            str, Field(description="Data job identifier returned by this server.")
+        ],
+    ) -> AbortDataJobResponse:
+        """Abort a SODA/UWS data job previously created by this server."""
+        try:
+            return await service.abort_data_job(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Delete CASDA data job", annotations=_DESTRUCTIVE)
+    async def casda_delete_data_job(
+        request_id: Annotated[
+            str, Field(description="Data job identifier returned by this server.")
+        ],
+    ) -> DeleteDataJobResponse:
+        """Delete a data job from the archive and local state."""
+        try:
+            return await service.delete_data_job(request_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Download CASDA job results", annotations=_IDEMPOTENT_WRITE)
+    async def casda_download_job_results(
+        request_id: Annotated[str, Field(description="Data job identifier with ready results.")],
+        verify_checksum: Annotated[
+            bool,
+            Field(description="Verify archive checksums when sidecar metadata is available."),
+        ] = True,
+        ctx: Context[Any, Any, Any] | None = None,
+    ) -> DownloadJobResultsResponse:
+        """Sequentially download all ready results for one job into CASDA_DOWNLOAD_DIR.
+
+        Stops on the first failure and reports partial successes.
+        """
+        try:
+
+            async def _progress(current: int, total: int | None) -> None:
+                if ctx is not None:
+                    await ctx.report_progress(current, total)
+
+            return await service.download_job_results(
+                request_id,
+                verify_checksum=verify_checksum,
+                progress_callback=_progress if ctx is not None else None,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Verify local CASDA download", annotations=_LOCAL_READ_ONLY)
+    async def casda_verify_file(
+        path: Annotated[
+            str,
+            Field(description="Path under CASDA_DOWNLOAD_DIR of an existing downloaded file."),
+        ],
+    ) -> VerifyFileResponse:
+        """Re-verify checksum and length of an existing file under the download root."""
+        try:
+            return await service.verify_file(path)
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:
