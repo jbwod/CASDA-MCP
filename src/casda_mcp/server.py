@@ -1374,7 +1374,8 @@ def create_mcp_server(
             "do not assume background polling.\n"
             "5. Only after products are ready, call casda_download_product one product at a "
             f"time with verify_checksum=true.{destination_text}\n"
-            "6. Cutouts and spectrum generation are not available—do not invent those calls.\n"
+            "6. For spatial/spectral subsets use prompt make-cutout / casda_create_cutout "
+            "(or casda_create_spectrum); then casda_get_data_job and download tools.\n"
             "7. Read casda://skills/casda-stage-and-download for safety details."
         )
 
@@ -1413,8 +1414,8 @@ def create_mcp_server(
         name="query-catalogue",
         title="Query CASDA catalogue products",
         description=(
-            "Search ObsCore catalogue products with bounded filters. Dedicated SCS endpoints "
-            "are not exposed."
+            "List catalogues, run SCS cone search via casda_search_catalogue, or fall back to "
+            "ObsCore catalogue product search."
         ),
     )
     def query_catalogue(
@@ -1422,50 +1423,114 @@ def create_mcp_server(
         dec_deg: float | None = None,
         radius_deg: float | None = None,
         project_code: str | None = None,
+        catalogue: str | None = None,
     ) -> str:
-        criteria: list[str] = ['product_types=["catalogue"]']
+        cone: list[str] = []
         if ra_deg is not None:
-            criteria.append(f"ra_deg={ra_deg}")
+            cone.append(f"ra_deg={ra_deg}")
         if dec_deg is not None:
-            criteria.append(f"dec_deg={dec_deg}")
+            cone.append(f"dec_deg={dec_deg}")
         if radius_deg is not None:
-            criteria.append(f"radius_deg={radius_deg}")
+            cone.append(f"radius_deg={radius_deg}")
+        cone_text = ", ".join(cone) if cone else "ra_deg/dec_deg/radius_deg from the user"
+        catalogue_text = catalogue or "a short_name from casda_list_catalogues"
+        product_criteria = ['product_types=["catalogue"]']
         if project_code:
-            criteria.append(f'project_code="{project_code}"')
+            product_criteria.append(f'project_code="{project_code}"')
+        if cone:
+            product_criteria.extend(cone)
         return (
-            "Search CASDA catalogue products only through the bounded ObsCore search tool.\n\n"
-            f"1. Call casda_search_products with {', '.join(criteria)}.\n"
-            "2. Present catalogue product_id values and inspect selected rows with "
-            "casda_get_product.\n"
-            "3. Do not call SCS, invent catalogue-specific endpoints, or write raw ADQL.\n"
-            "4. Dedicated Simple Cone Search catalogue endpoints remain planned, not exposed."
+            "Query CASDA catalogues with the dedicated discovery tools.\n\n"
+            "1. Call casda_list_catalogues to obtain catalogue short_name values.\n"
+            f"2. For row-level cone search call casda_search_catalogue with "
+            f'catalogue="{catalogue_text}" and {cone_text}.\n'
+            f"3. For file-level catalogue products call casda_search_products with "
+            f"{', '.join(product_criteria)}, then casda_get_product for selected IDs.\n"
+            "4. Do not invent SCS URLs or scrape the DAP."
+        )
+
+    @mcp.prompt(
+        name="query-tables",
+        title="Discover CASDA TAP schemas and tables",
+        description=(
+            "Walk VOSI/TAP_SCHEMA discovery: list schemas, list tables, then describe a table."
+        ),
+    )
+    def query_tables(
+        schema_name: str | None = None,
+        table_name: str | None = None,
+    ) -> str:
+        schema_text = schema_name or "a schema chosen with the user (for example ivoa or casda)"
+        table_text = table_name or "a table chosen after listing"
+        return (
+            "Discover CASDA TAP schemas and table metadata.\n\n"
+            "1. Call casda_list_schemas (paginate with next_cursor when has_more is true).\n"
+            f"2. Call casda_list_tables with schema_name for {schema_text}.\n"
+            f"3. Call casda_describe_table for {schema_text}.{table_text} to inspect columns, "
+            "UCDs, units, and descriptions.\n"
+            "4. Optionally call casda_list_foreign_keys for relationship metadata.\n"
+            "5. Stay read-only; do not stage or download from this workflow."
+        )
+
+    @mcp.prompt(
+        name="run-adql",
+        title="Validate and run advanced CASDA ADQL",
+        description=(
+            "Validate SELECT-only ADQL, then run sync tap_query or submit an async job when "
+            "CASDA_ENABLE_ADVANCED_ADQL is enabled."
+        ),
+    )
+    def run_adql(query: str | None = None) -> str:
+        query_text = query or "the SELECT-only ADQL supplied by the user"
+        return (
+            "Run advanced read-only ADQL against CASDA TAP when the server allows it.\n\n"
+            f"Query: {query_text}\n"
+            "1. Prefer casda_build_adql for ObsCore-shaped queries, or draft ADQL carefully.\n"
+            "2. Call casda_validate_adql before execution.\n"
+            "3. For sync results call casda_tap_query; for long queries call "
+            "casda_submit_tap_query then casda_get_tap_job / casda_get_tap_results.\n"
+            "4. These tools require CASDA_ENABLE_ADVANCED_ADQL=true. Treat "
+            "ADVANCED_ADQL_DISABLED as configuration, not an archive outage.\n"
+            "5. Queries must remain SELECT-only; mutations, comments, and multi-statement "
+            "batches are rejected.\n"
+            "6. Prefer casda_search_products / discovery tools when allowlisted filters suffice."
         )
 
     @mcp.prompt(
         name="make-cutout",
-        title="Make a CASDA cutout (unsupported)",
+        title="Make a CASDA cutout",
         description=(
-            "Explains that spatial/spectral cutouts are not exposed by this server and must "
-            "not be invented."
+            "Create an authenticated SODA cutout with casda_create_cutout, monitor with "
+            "casda_get_data_job, then download results."
         ),
     )
-    def make_cutout() -> str:
+    def make_cutout(
+        product_id: str | None = None,
+        circle: str | None = None,
+    ) -> str:
+        product_text = product_id or "an explicit product_id from search/inspect"
+        circle_text = circle or "CIRCLE 'ra_deg dec_deg radius_deg' (and optional BAND/CHANNEL/POL)"
         return (
-            "CASDA cutouts are not available through this MCP server.\n\n"
-            "There is no cutout tool to call. Do not invent SODA cutout parameters, scrape the "
-            "Data Access Portal, or claim cutout staging succeeded.\n"
-            "Spatial/spectral cutouts and spectrum generation remain planned/authenticated "
-            "CASDA capabilities outside the current MCP surface.\n"
-            "Offer full-file search, inspect, stage, download, or manifest workflows instead, "
-            "or direct the user to supported CASDA VO/DAP cutout paths outside this server."
+            "Create a CASDA spatial/spectral cutout through the authenticated data-job tools.\n\n"
+            f"1. Confirm OPAL credentials and CASDA_ENABLE_STAGING=true. Inspect {product_text} "
+            "with casda_get_product (and optionally casda_get_datalink).\n"
+            f"2. Call casda_create_cutout with that product_id and {circle_text}. "
+            "POLYGON/BAND/CHANNEL/POL/COORD are also supported when the user supplies them.\n"
+            "3. Poll with separate casda_get_data_job calls using the returned request_id; "
+            "do not assume background polling.\n"
+            "4. When ready, download with casda_download_product or casda_download_job_results "
+            "(downloads require CASDA_ENABLE_DOWNLOADS and CASDA_DOWNLOAD_DIR).\n"
+            "5. For integrated spectra use casda_create_spectrum with the same job/status/"
+            "download pattern.\n"
+            "6. Do not scrape the DAP cutout UI. Read casda://skills/casda-stage-and-download."
         )
 
     @mcp.prompt(
         name="monitor-releases",
         title="Monitor CASDA release state",
         description=(
-            "Check product release fields via search and get_product. The observation-events "
-            "feed is not exposed yet."
+            "Check product release fields via search/get_product and optionally "
+            "casda_list_events for observation lifecycle notices."
         ),
     )
     def monitor_releases(
@@ -1481,14 +1546,17 @@ def create_mcp_server(
         if collection:
             criteria.append(f'collection="{collection}"')
         criteria_text = ", ".join(criteria) if criteria else "filters supplied by the user"
+        events_filter = (
+            f' with project_code="{project_code}"' if project_code else " (optionally filtered)"
+        )
         return (
-            "Check CASDA release state using existing metadata tools only.\n\n"
+            "Check CASDA release and observation lifecycle state.\n\n"
             f"1. Call casda_search_products with {criteria_text}. Consider released_only=false "
             "when the user wants unreleased rows, and sort_by=release_date when useful.\n"
             "2. Inspect selected products with casda_get_product and report release_date / "
             "release-related fields honestly.\n"
-            "3. Do not claim continuous monitoring. The public observation-events feed is "
-            "planned and not exposed as an MCP tool or resource yet.\n"
+            f"3. When useful, call casda_list_events{events_filter} for public observation "
+            "lifecycle notices; paginate with next_cursor. Do not claim continuous monitoring.\n"
             "4. Do not scrape the DAP for release notices."
         )
 

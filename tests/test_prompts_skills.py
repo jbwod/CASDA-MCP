@@ -10,6 +10,8 @@ EXPECTED_PROMPTS = {
     "stage-and-download",
     "build-reproducible-selection",
     "query-catalogue",
+    "query-tables",
+    "run-adql",
     "make-cutout",
     "monitor-releases",
 }
@@ -29,12 +31,25 @@ async def test_list_prompts_includes_planned_workflow_names() -> None:
     await server.casda_service.aclose()  # type: ignore[attr-defined]
 
 
-async def test_make_cutout_prompt_states_unsupported() -> None:
+async def test_make_cutout_prompt_uses_cutout_workflow() -> None:
     server = create_mcp_server()
     result = await server.get_prompt("make-cutout")
     text = result.messages[0].content.text  # type: ignore[union-attr]
-    assert "not available" in text.lower()
-    assert "no cutout tool" in text.lower()
+    assert "casda_create_cutout" in text
+    assert "casda_get_data_job" in text
+    await server.casda_service.aclose()  # type: ignore[attr-defined]
+
+
+async def test_query_tables_and_run_adql_prompts() -> None:
+    server = create_mcp_server()
+    tables = await server.get_prompt("query-tables")
+    tables_text = tables.messages[0].content.text  # type: ignore[union-attr]
+    assert "casda_list_schemas" in tables_text
+    assert "casda_describe_table" in tables_text
+    adql = await server.get_prompt("run-adql")
+    adql_text = adql.messages[0].content.text  # type: ignore[union-attr]
+    assert "casda_validate_adql" in adql_text
+    assert "CASDA_ENABLE_ADVANCED_ADQL" in adql_text
     await server.casda_service.aclose()  # type: ignore[attr-defined]
 
 

@@ -1,33 +1,41 @@
 ---
 name: casda-find-and-inspect
 description: >-
-  Search and inspect CASDA ObsCore products with bounded filters. Use when the
-  user needs candidates around a sky position, project, ASKAP SBID, or catalogue
-  products without staging or downloading.
+  Search and inspect CASDA products with bounded ObsCore filters or VO discovery
+  (SIA/SCS/SSA), plus projects and events. Use when the user needs candidates
+  without staging or downloading.
 ---
 
 # CASDA find and inspect
 
 ## Workflow
 
-1. Call `casda_search_products` with explicit bounded criteria. Do not broaden filters silently.
-2. Present stable product identifiers, sizes, release state, and access fields to the user.
-3. For selected IDs, call `casda_get_product`. For a known ASKAP scheduling block, call `casda_get_observation`.
-4. Stop after inspection unless the user explicitly asks to stage, download, or create a manifest.
+1. Choose the discovery path that matches the need:
+   - ObsCore products: `casda_search_products` with explicit bounded criteria.
+   - Images/cubes: `casda_search_images` (SIA 2) or `casda_list_image_surveys` /
+     `casda_search_survey_images` (SIA 1).
+   - Catalogue rows: `casda_list_catalogues` then `casda_search_catalogue` (SCS).
+   - Spectra: `casda_search_spectra` (SSA).
+   - Projects/collections: `casda_search_projects`, `casda_get_project`, `casda_get_collection`.
+   - Lifecycle notices: `casda_list_events`.
+2. Present stable identifiers, sizes, release state, and access fields to the user.
+3. For selected ObsCore IDs, call `casda_get_product`. For a known ASKAP scheduling block, call `casda_get_observation`.
+4. Stop after inspection unless the user explicitly asks to stage, cut out, download, or create a manifest.
 
-## Useful filters
+## Useful ObsCore filters
 
 - Position: `ra_deg`, `dec_deg`, `radius_deg` (server-bounded cone).
 - Project: exact `project_code` (for example `AS102`).
 - ASKAP: `scheduling_block_id`.
-- Types: allowlisted `image`, `cube`, `visibility`, `spectrum`, `catalogue`, `weight`, `moment_map`.
+- Facility/instrument: `facility_name`, `instrument_name`.
+- Types: allowlisted `image`, `cube`, `visibility`, `spectrum`, `catalogue`, `weight`, `moment_map`, `cubelet`, `evaluation`, `scan`.
 - Time / frequency: overlapping ISO 8601 dates; overlapping frequencies in hertz.
 - `released_only` defaults to true.
 
-## Catalogue searches
+## Schema discovery
 
-For catalogue products only, set `product_types` to `["catalogue"]`. Dedicated SCS catalogue endpoints are not exposed.
+For TAP table exploration use `casda_list_schemas` → `casda_list_tables` → `casda_describe_table` (prompt `query-tables`).
 
-## Related prompt
+## Related prompts
 
-Use MCP prompt `find-and-inspect-products` or `query-catalogue` as a conversation starter.
+Use `find-and-inspect-products`, `query-catalogue`, `query-tables`, or `monitor-releases`.

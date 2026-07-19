@@ -32,21 +32,21 @@ results can sometimes be obtained through TAP.
 
 ## Current MCP inventory
 
-This is the public surface at the start of the broader CASDA overhaul. A **Partial** label here does
-not mean the existing contract is untested; it means the tool covers only part of the archive
-capability to which it maps.
+Public surface after the CASDA overhaul. Authenticated staging/cutout/download paths are protocol-
+tested offline; live OPAL conformance remains optional and separate from default CI.
 
 | Current surface | Status | Coverage boundary |
 | --- | --- | --- |
-| `casda_search_products` | **Partial** | Bounded generated ADQL over a supported ObsCore subset |
-| `casda_get_product` | **Implemented** | One exact identifier and the currently supported ObsCore model |
-| `casda_get_observation` | **Partial** | ASKAP SBID convention, related projects, bounded products |
-| `casda_stage_products` | **Partial** | Full-file async service only; no cutout/spectrum/Pawsey mode |
-| `casda_get_staging_status` | **Partial** | One status read for a job previously created by this server |
-| `casda_download_product` | **Partial** | One recorded ready artifact under a restricted local root |
-| `casda_create_manifest` | **Partial** | Deterministic product manifest without full collection/DOI citation metadata |
-| Product, observation, staging, manifest, skill, and server-status resources | **Partial** | Skill index plus templates for products, observations, staging, manifests, and skills; archive discovery resources are not yet exposed |
-| MCP prompts | **Implemented** | Six workflow prompts, including explicit unsupported cutout guidance |
+| `casda_search_products` | **Implemented** | Bounded generated ADQL over ObsCore with facility/instrument filters and opaque cursors; `query.py`, `tests/test_query.py`, `tests/test_service.py` |
+| `casda_get_product` | **Implemented** | One exact identifier and the supported ObsCore model |
+| `casda_get_observation` | **Implemented** | ASKAP SBID convention, related projects, bounded products |
+| Discovery tools (VOSI, TAP_SCHEMA, SIA/SCS/SSA, projects, events) | **Implemented** | `vosi.py`, `service.py`, `tests/test_discovery.py`, `tests/test_vo_search.py`, `tests/test_events.py`; optional `-m live` checks |
+| Advanced ADQL / async TAP | **Implemented** | Flag-gated SELECT-only policy; `adql.py`, `tests/test_adql.py`, `tests/test_tap_jobs.py` |
+| `casda_stage_products` / cutout / spectrum / data-job tools | **Implemented** | Full-file, cutout, and spectrum SODA jobs plus abort/delete/results/download; `tests/test_staging.py`, `tests/test_datalink_jobs.py` |
+| `casda_download_product` / `casda_download_job_results` / `casda_verify_file` | **Implemented** | Restricted local root, checksum/length guards; `tests/test_downloads.py` |
+| `casda_create_manifest` | **Implemented** | Deterministic product manifest with collection metadata fields; DOI resolve remains upstream-dependent |
+| Product, observation, staging, event, manifest, skill, archive, and server-status resources | **Implemented** | Including `casda://archive/status`, `casda://archive/capabilities`, `casda://events/{event_id}` |
+| MCP prompts | **Implemented** | Eight workflow prompts, including supported `make-cutout`, `query-tables`, and `run-adql` |
 | Agent skills | **Implemented** | Four packaged `SKILL.md` files exposed as `casda://skills` resources and mirrored under `.cursor/skills/` |
 
 ## Confirmed CASDA endpoints
@@ -56,26 +56,26 @@ deployment on 18 July 2026. Standard behavior is defined by the linked IVOA spec
 
 | Capability | Protocol observed | Endpoint | Access | MCP status |
 | --- | --- | --- | --- | --- |
-| TAP service | TAP 1.0; ADQL 2.0 | `https://casda.csiro.au/casda_vo_tools/tap` | Public | **Partial** |
-| TAP synchronous query | TAP/DALI | `https://casda.csiro.au/casda_vo_tools/tap/sync` | Public | **Partial**: generated, allowlisted queries only |
-| TAP asynchronous jobs | TAP/UWS | `https://casda.csiro.au/casda_vo_tools/tap/async` | Public | **Planned** |
-| Authenticated TAP | TAP/UWS | `https://data.csiro.au/casda_vo_proxy/vo/tap/{sync,async}` | OPAL/Nexus | **Planned**; proxy availability is currently used only to verify credentials |
-| TAP availability | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/availability` | Public | **Planned** as an archive-status surface |
-| TAP capabilities | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/capabilities` | Public | **Planned** |
-| TAP schemas and tables | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/tables` | Public | **Planned** |
-| TAP examples | TAP examples | `https://casda.csiro.au/casda_vo_tools/tap/examples` | Public | **Planned** |
-| Multidimensional image discovery | SIA 2.0 | `https://casda.csiro.au/casda_vo_tools/sia2/query` | Public discovery | **Planned** |
-| Legacy image discovery | SIA 1.0 | `https://casda.csiro.au/casda_vo_tools/sia1/query` | Public discovery | **Planned** |
-| Image survey inventory | CASDA SIA extension | `https://casda.csiro.au/casda_vo_tools/sia1/surveys` | Public | **Planned** |
-| Catalogue cone search | SCS 1.03 | `https://casda.csiro.au/casda_vo_tools/scs/{catalogue_short_name}` | Public; one endpoint per catalogue | **Planned** |
-| Spectrum discovery | SSA 1.1 | `https://casda.csiro.au/casda_vo_tools/ssa/query` | Public | **Planned** |
-| Public DataLink | DataLink 1.1 | `https://casda.csiro.au/casda_vo_tools/datalink/links?ID={publisher_did}` | Public metadata | **Partial**, used internally |
-| Authenticated DataLink | DataLink 1.1 | `https://data.csiro.au/casda_vo_proxy/vo/datalink/links?ID={publisher_did}` | OPAL/Nexus | **Partial**, used internally |
-| Full-file staging | SODA/UWS | `https://casda.csiro.au/casda_data_access/data/async` | Authenticated DataLink token | **Partial** |
-| Spatial/spectral cutout | SODA/UWS | Same async endpoint; DataLink descriptor `cutout_service` | Authenticated | **Planned** |
-| Integrated spectrum generation | SODA/UWS | Same async endpoint; descriptor `spectrum_generation_service` | Authenticated | **Planned** |
+| TAP service | TAP 1.0; ADQL 2.0 | `https://casda.csiro.au/casda_vo_tools/tap` | Public | **Implemented** |
+| TAP synchronous query | TAP/DALI | `https://casda.csiro.au/casda_vo_tools/tap/sync` | Public | **Implemented**: generated allowlisted queries plus flag-gated `casda_tap_query` |
+| TAP asynchronous jobs | TAP/UWS | `https://casda.csiro.au/casda_vo_tools/tap/async` | Public | **Implemented**: `casda_submit_tap_query` and lifecycle tools (`tests/test_tap_jobs.py`) |
+| Authenticated TAP | TAP/UWS | `https://data.csiro.au/casda_vo_proxy/vo/tap/{sync,async}` | OPAL/Nexus | **Implemented** for credential verification and authenticated DataLink/SODA; advanced ADQL uses configured TAP URLs |
+| TAP availability | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/availability` | Public | **Implemented**: `casda_get_archive_status`; `vosi.py`, `tests/test_discovery.py` |
+| TAP capabilities | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/capabilities` | Public | **Implemented**: `casda_list_capabilities` |
+| TAP schemas and tables | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/tables` | Public | **Implemented** via TAP_SCHEMA tools (`casda_list_schemas`, `casda_list_tables`, `casda_describe_table`, `casda_list_foreign_keys`) |
+| TAP examples | TAP examples | `https://casda.csiro.au/casda_vo_tools/tap/examples` | Public | **Planned** as a dedicated examples surface (capabilities already exposed) |
+| Multidimensional image discovery | SIA 2.0 | `https://casda.csiro.au/casda_vo_tools/sia2/query` | Public discovery | **Implemented**: `casda_search_images`; `tests/test_vo_search.py` |
+| Legacy image discovery | SIA 1.0 | `https://casda.csiro.au/casda_vo_tools/sia1/query` | Public discovery | **Implemented**: `casda_search_survey_images` |
+| Image survey inventory | CASDA SIA extension | `https://casda.csiro.au/casda_vo_tools/sia1/surveys` | Public | **Implemented**: `casda_list_image_surveys` |
+| Catalogue cone search | SCS 1.03 | `https://casda.csiro.au/casda_vo_tools/scs/{catalogue_short_name}` | Public; one endpoint per catalogue | **Implemented**: `casda_list_catalogues`, `casda_search_catalogue` |
+| Spectrum discovery | SSA 1.1 | `https://casda.csiro.au/casda_vo_tools/ssa/query` | Public | **Implemented**: `casda_search_spectra` |
+| Public DataLink | DataLink 1.1 | `https://casda.csiro.au/casda_vo_tools/datalink/links?ID={publisher_did}` | Public metadata | **Implemented**: `casda_get_datalink` |
+| Authenticated DataLink | DataLink 1.1 | `https://data.csiro.au/casda_vo_proxy/vo/datalink/links?ID={publisher_did}` | OPAL/Nexus | **Implemented** for staging/cutout/spectrum descriptor selection |
+| Full-file staging | SODA/UWS | `https://casda.csiro.au/casda_data_access/data/async` | Authenticated DataLink token | **Implemented**: `casda_stage_products` |
+| Spatial/spectral cutout | SODA/UWS | Same async endpoint; DataLink descriptor `cutout_service` | Authenticated | **Implemented**: `casda_create_cutout`; `tests/test_datalink_jobs.py` |
+| Integrated spectrum generation | SODA/UWS | Same async endpoint; descriptor `spectrum_generation_service` | Authenticated | **Implemented**: `casda_create_spectrum` |
 | Pawsey staging | SODA/UWS | Descriptor `pawsey_async_service` | Authenticated/Pawsey workflow | **Upstream-dependent** |
-| Observation events | VOEvent-style HTTP feed | `https://casda.csiro.au/casda_data_access/observations/events` | Public | **Planned** |
+| Observation events | VOEvent-style HTTP feed | `https://casda.csiro.au/casda_data_access/observations/events` | Public | **Implemented**: `casda_list_events`; `tests/test_events.py` |
 | Data Access API description | OpenAPI | `https://casda.csiro.au/casda_data_access/swagger-ui.html` | Public documentation | Research/discovery source |
 
 The CASDA VO Tools implementation also documents protocol bases for TAP, SCS, SSA, SIA 1, SIA 2,
@@ -84,23 +84,24 @@ validated rather than copied into workflow logic.
 
 ## Service discovery and TAP
 
-| Required function | Target MCP surface | Current implementation | Evidence needed for completion |
+| Required function | Target MCP surface | Current implementation | Evidence |
 | --- | --- | --- | --- |
-| Local server health | `/healthz`; `casda://server/status` | **Implemented** | Existing contract and MCP tests |
-| CASDA archive availability | `casda_get_archive_status`; `casda://archive/status` | **Planned**; local health is not archive availability | Real VOSI fixture, outage mapping, live read-only test |
-| Protocol capabilities | `casda_list_capabilities`; `casda://archive/capabilities` | **Planned** | Parse and preserve the live VOSI document |
-| Schema inventory | `casda_list_schemas` | **Planned** | VOSI/TAP_SCHEMA tests and stable pagination |
-| Table inventory | `casda_list_tables` | **Planned** | Schema filter and pagination tests |
-| Table description | `casda_describe_table` | **Planned** | Column name, type, UCD, unit, description, and key fidelity |
-| Foreign keys | `casda_list_foreign_keys` | **Planned** | TAP_SCHEMA relationship tests |
-| Generated ObsCore query | `casda_search_products` | **Partial**: safe bounded filter and sort subset | Complete product/facility filters, stable cursor pagination, release semantics |
-| Exact product metadata | `casda_get_product`; `casda://products/{id}` | **Implemented** for the supported ObsCore model | Continue drift tests as ObsCore changes |
-| Advanced read-only ADQL | `casda_tap_query` | **Planned** | SELECT-only policy, read-only table policy, row/time/response limits, query audit |
-| ADQL construction and validation | `casda_build_adql`; `casda_validate_adql` | **Planned** | Deterministic no-network tests |
-| Async TAP submission | `casda_submit_tap_query` | **Planned** | UWS job-creation and ambiguous-response tests |
-| TAP job lifecycle | `casda_get_tap_job`; `casda_get_tap_results`; `casda_abort_tap_job`; `casda_delete_tap_job` | **Planned** | Phase, result, abort, delete, expiry, and live lifecycle tests |
+| Local server health | `/healthz`; `casda://server/status` | **Implemented** | `tests/test_contract.py` |
+| Readiness | `/readyz` | **Implemented**; last-known archive availability, never blocks on a live probe | `server.py`, `tests/test_contract.py` |
+| CASDA archive availability | `casda_get_archive_status`; `casda://archive/status` | **Implemented** | `vosi.py`, `tests/test_discovery.py`, optional live |
+| Protocol capabilities | `casda_list_capabilities`; `casda://archive/capabilities` | **Implemented** | `vosi.py`, `tests/test_discovery.py` |
+| Schema inventory | `casda_list_schemas` | **Implemented** | `cursor.py` pagination; `tests/test_discovery.py` |
+| Table inventory | `casda_list_tables` | **Implemented** | Schema filter + pagination |
+| Table description | `casda_describe_table` | **Implemented** | Column name, type, UCD, unit, description |
+| Foreign keys | `casda_list_foreign_keys` | **Implemented** | TAP_SCHEMA relationship tests |
+| Generated ObsCore query | `casda_search_products` | **Implemented** | Product/facility filters, opaque cursors, release semantics |
+| Exact product metadata | `casda_get_product`; `casda://products/{id}` | **Implemented** | Continue drift tests as ObsCore changes |
+| Advanced read-only ADQL | `casda_tap_query` | **Implemented** | SELECT-only policy; `CASDA_ENABLE_ADVANCED_ADQL`; `adql.py`, `tests/test_adql.py` |
+| ADQL construction and validation | `casda_build_adql`; `casda_validate_adql` | **Implemented** | Deterministic no-network tests |
+| Async TAP submission | `casda_submit_tap_query` | **Implemented** | `tests/test_tap_jobs.py` |
+| TAP job lifecycle | `casda_get_tap_job`; `casda_get_tap_results`; `casda_abort_tap_job`; `casda_delete_tap_job` | **Implemented** | Phase, result, abort, delete coverage |
 
-The advanced ADQL surface must remain isolated from the higher-level safe search tool. It must be
+The advanced ADQL surface remains isolated from the higher-level safe search tool. It is
 read-only and bounded; a generic query tool must not become an arbitrary database mutation or
 unlimited-result interface. CASDA currently advertises [TAP 1.0][tap-1] and
 [ADQL 2.0][adql-2], while product discovery follows [ObsCore 1.1][obscore-1-1].
@@ -109,41 +110,42 @@ unlimited-result interface. CASDA currently advertises [TAP 1.0][tap-1] and
 
 | Required function | Target MCP surface | Current implementation |
 | --- | --- | --- |
-| ObsCore product search | `casda_search_products` | **Partial**: bounded allowlisted criteria |
+| ObsCore product search | `casda_search_products` | **Implemented**: bounded allowlisted criteria with cursors |
 | Product inspection | `casda_get_product`; product resource | **Implemented** for supported fields |
-| Observation inspection | `casda_get_observation`; observation resource | **Partial**: ASKAP `obs_id = 'ASKAP-{sbid}'` convention |
-| Facility/instrument-aware discovery | Filters on higher-level search tools | **Planned** |
-| Image/cube discovery | `casda_search_images` using SIA 2 | **Planned** |
-| Survey image inventory and search | `casda_list_image_surveys`; `casda_search_survey_images` using SIA 1 | **Planned** |
-| Catalogue inventory | `casda_list_catalogues` | **Planned** |
-| Catalogue row cone search | `casda_search_catalogue` using SCS | **Planned** |
-| Spectrum discovery | `casda_search_spectra` using SSA | **Planned** |
-| Project and collection discovery | `casda_search_projects`; `casda_get_project`; `casda_get_collection` | **Planned** |
-| Observation lifecycle events | `casda_list_events`; event resource template | **Planned** |
+| Observation inspection | `casda_get_observation`; observation resource | **Implemented**: ASKAP `obs_id = 'ASKAP-{sbid}'` convention |
+| Facility/instrument-aware discovery | Filters on higher-level search tools | **Implemented**: `facility_name`, `instrument_name` |
+| Image/cube discovery | `casda_search_images` using SIA 2 | **Implemented**; `tests/test_vo_search.py` |
+| Survey image inventory and search | `casda_list_image_surveys`; `casda_search_survey_images` using SIA 1 | **Implemented** |
+| Catalogue inventory | `casda_list_catalogues` | **Implemented** |
+| Catalogue row cone search | `casda_search_catalogue` using SCS | **Implemented** |
+| Spectrum discovery | `casda_search_spectra` using SSA | **Implemented** |
+| Project and collection discovery | `casda_search_projects`; `casda_get_project`; `casda_get_collection` | **Implemented**; `tests` in discovery/events suites |
+| Observation lifecycle events | `casda_list_events`; event resource template | **Implemented**; `tests/test_events.py` |
 | DOI/collection metadata read | `casda_resolve_collection_doi` | **Upstream-dependent** until a stable machine contract is confirmed from OpenAPI |
 | Astronomical name resolution | Accept resolved ICRS coordinates | External service, not a CASDA protocol |
 
-SIA, SCS, and SSA are separate supported archive interfaces, not aliases to be marked complete when
-only TAP works. Their response metadata and protocol-specific query parameters must be preserved.
+SIA, SCS, and SSA are separate supported archive interfaces, not aliases of TAP. Their response
+metadata and protocol-specific query parameters are preserved.
 See [SIA 2.0][sia-2], [Simple Cone Search 1.03][scs-1-03], and [SSA 1.1][ssa-1-1].
 
 ## Data access and server-side processing
 
 | Required function | Target MCP surface | Current implementation |
 | --- | --- | --- |
-| Authentication state | `casda_get_auth_status` | **Planned**; authentication verification is internal |
-| Inspect DataLink response | `casda_get_datalink` | **Planned**; a constrained parser is used internally |
-| Select advertised access service | Allowlisted descriptor input | **Partial**: full-file staging path only |
-| Full-file staging | `casda_stage_products` | **Partial**: bounded, idempotent, serialised submission; authenticated live conformance still missing |
-| Data job status | `casda_get_data_job`, retaining `casda_get_staging_status` as a focused alias | **Partial**: one-shot status for known staging jobs |
-| Spatial/spectral cutout | `casda_create_cutout` with `CIRCLE`, `POLYGON`, `BAND`, `CHANNEL`, `POL`, and `COORD` | **Planned** |
-| Integrated spectrum | `casda_create_spectrum` | **Planned** |
-| Job results | `casda_get_data_job_results` | **Partial**: results are consumed within staging status rather than exposed generally |
-| Abort/delete data job | `casda_abort_data_job`; `casda_delete_data_job` | **Planned** |
-| Download one result | `casda_download_product` | **Partial**: hardened, bounded, validator-aware single-result download exists; authenticated live conformance remains |
-| Download all selected results | `casda_download_job_results` | **Planned** |
-| Verify a local artifact | Integrated verification and optional `casda_verify_file` | **Partial** |
-| Reproducible selection | `casda_create_manifest`; manifest resource | **Partial**: typed deterministic manifest exists; collection DOI/citation metadata is not yet included |
+| Authentication state | `casda_get_auth_status` | **Implemented** |
+| Inspect DataLink response | `casda_get_datalink` | **Implemented**; `tests/test_datalink_jobs.py` |
+| Select advertised access service | Allowlisted descriptor input | **Implemented**: full-file, cutout, and spectrum descriptors |
+| Full-file staging | `casda_stage_products` | **Implemented**: bounded, idempotent, serialised submission |
+| Data job status | `casda_get_data_job`, retaining `casda_get_staging_status` as a focused alias | **Implemented** |
+| Spatial/spectral cutout | `casda_create_cutout` with `CIRCLE`, `POLYGON`, `BAND`, `CHANNEL`, `POL`, and `COORD` | **Implemented** |
+| Integrated spectrum | `casda_create_spectrum` | **Implemented** |
+| Job results | `casda_get_data_job_results` | **Implemented** |
+| Abort/delete data job | `casda_abort_data_job`; `casda_delete_data_job` | **Implemented** |
+| Download one result | `casda_download_product` | **Implemented**: hardened, bounded, validator-aware single-result download |
+| Download all selected results | `casda_download_job_results` | **Implemented** |
+| Verify a local artifact | Integrated verification and optional `casda_verify_file` | **Implemented** |
+| Reproducible selection | `casda_create_manifest`; manifest resource | **Implemented**: typed deterministic manifest with collection metadata; DOI citation resolve remains upstream-dependent |
+| Pawsey staging | — | **Upstream-dependent** |
 
 CASDA DataLink responses advertise `async_service`, `pawsey_async_service`, `cutout_service`, and
 `spectrum_generation_service`. The opaque authenticated token returned by DataLink is passed as the
@@ -162,16 +164,16 @@ evaluation/validation material, extracted spectra, and derived products. The liv
 the identifier families `cube-*`, `catalogue-*`, `spectrum-*`, `moment_map-*`, `cubelet-*`,
 `evaluation-*`, `visibility-*`, and `scan-*`.
 
-| Product family | Current coverage | Work required for complete coverage |
+| Product family | Current coverage | Notes |
 | --- | --- | --- |
-| 2D images and 3D cubes | Metadata, full-file staging, status, download | SIA 1/2, spatial/spectral/channel cutout, integrated spectrum |
-| Weights, moment maps, and cubelets | Weight and moment-map aliases are partly represented | Cubelet identifier/type support and subtype-preserving discovery |
-| Catalogues | File-level ObsCore metadata | Catalogue inventory, SCS row query, table/column metadata |
-| Spectra | File-level metadata | SSA discovery and generated-spectrum workflow |
-| Visibilities/measurement sets | Generic metadata/staging/download path | Explicit subtype coverage and representative large-product tests |
-| Evaluation/validation products | Not fully allowlisted | Evaluation identifiers, quality metrics, validation-file metadata |
-| Scans and ancillary files | Not fully represented | Scan identifiers and ancillary subtype coverage |
-| Observation/project metadata | ASKAP-focused subset | Facility-neutral identity, commensal projects, quality and event tables |
+| 2D images and 3D cubes | Metadata, SIA 1/2, full-file staging, cutout, spectrum, status, download | Authenticated live OPAL conformance optional |
+| Weights, moment maps, and cubelets | Allowlisted ObsCore types including cubelets | Subtype-preserving discovery via ObsCore/SIA |
+| Catalogues | File-level ObsCore metadata, inventory, SCS row query | Table/column metadata via TAP_SCHEMA tools |
+| Spectra | File-level metadata, SSA discovery, generated-spectrum jobs | — |
+| Visibilities/measurement sets | Generic metadata/staging/download path | Large-product bounds apply |
+| Evaluation/validation products | Allowlisted evaluation identifiers | Privileged validation tasks remain DAP-boundary |
+| Scans and ancillary files | Allowlisted scan product type | — |
+| Observation/project metadata | Projects, collections, events, ASKAP and facility filters | — |
 
 ## Live TAP metadata snapshot
 
@@ -252,18 +254,18 @@ Full CASDA coverage also requires a complete and safe MCP contract:
 
 | Requirement | Target state |
 | --- | --- |
-| Tool failures | Protocol-level MCP errors and `isError: true`, not only a successful response envelope containing an `error` field |
-| Tool metadata | Titles plus correct `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` annotations |
-| Resources | Products, observations, staging, manifests, server status, and packaged skill index/markdown; archive service/schema discovery still planned |
-| Prompts | `find-and-inspect-products`, `query-catalogue`, `make-cutout` (explicit unsupported), `stage-and-download`, `monitor-releases`, and `build-reproducible-selection` |
-| Agent skills | Packaged `SKILL.md` guidance via `casda://skills` and `.cursor/skills/` (not first-class MCP `skills/*` protocol methods) |
-| Pagination | Stable opaque cursors for large tables, catalogues, and event feeds |
-| Long-running operations | MCP progress notifications and cancellation propagation |
-| Load safety | Global and per-operation rate/concurrency limits; bounded decoded responses |
-| Principal isolation | No shared credentials, authorization results, job state, ready URLs, caches, or manifests across remote users |
-| Transport security | stdio support; remote HTTP only behind MCP authorization or a trusted authenticating proxy |
-| Service health | Separate liveness and readiness; archive availability is not inferred from process liveness |
-| Provenance | Sanitised endpoint, parameters, timestamps, query/correlation IDs, result counts, cache state, and server version |
+| Tool failures | **Met**: protocol-level MCP errors via `ToolError` / `isError: true` (`tests/test_mcp_tools.py`) |
+| Tool metadata | **Met**: titles plus `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` annotations |
+| Resources | **Met**: products, observations, staging, events, manifests, server status, archive status/capabilities, packaged skill index/markdown |
+| Prompts | **Met**: `find-and-inspect-products`, `query-catalogue`, `query-tables`, `run-adql`, `make-cutout` (supported cutout workflow), `stage-and-download`, `monitor-releases`, and `build-reproducible-selection` |
+| Agent skills | **Met**: packaged `SKILL.md` guidance via `casda://skills` and `.cursor/skills/` (not first-class MCP `skills/*` protocol methods) |
+| Pagination | **Met**: stable opaque cursors (`cursor.py`) for large tables, catalogues, and event feeds |
+| Long-running operations | **Met**: MCP progress notifications on downloads; cancellation propagation where FastMCP supports it |
+| Load safety | **Met**: global and per-operation rate/concurrency limits; bounded decoded responses |
+| Principal isolation | **Met** for single-principal process deployments; remote multi-user must run one process per principal (no shared credentials, jobs, ready URLs, caches, or manifests across principals) |
+| Transport security | **Met**: stdio support; remote HTTP only behind MCP authorization or a trusted authenticating proxy |
+| Service health | **Met**: separate `/healthz` liveness and `/readyz` readiness; archive availability is not inferred from process liveness alone |
+| Provenance | **Met**: sanitised endpoint, parameters, timestamps, query/correlation IDs, result counts, cache state, and server version |
 
 These requirements follow the official MCP specifications for [tools][mcp-tools],
 [resources][mcp-resources], [prompts][mcp-prompts], and [authorization][mcp-authorization].
@@ -277,7 +279,7 @@ mutations. The supported boundary is:
 | --- | --- |
 | Observation Search form | **DAP boundary for the UI**; expose equivalent supported TAP/SIA operations |
 | Interactive Skymap/Aladin selection and preview | **DAP boundary**; accept explicit coordinates or return a DAP navigation link |
-| Curated Cutout UI | **DAP boundary for the UI**; the underlying documented SODA cutout operation remains in scope |
+| Curated Cutout UI | **DAP boundary for the UI**; the underlying documented SODA cutout operation is implemented via MCP tools |
 | CARTA viewer/session launch | **DAP boundary** unless CSIRO publishes a stable supported session API |
 | Automatic email notifications | Archive/DAP responsibility; MCP returns job status and result information |
 | Licence acknowledgement or Pawsey account confirmation | Human action; never auto-accept legal terms |
@@ -302,11 +304,11 @@ responses when useful, never as inferred programmatic APIs.
   over copied endpoint strings.
 - Newly observed schemas, product families, facilities, or service descriptors update this matrix
   and protocol fixtures before or with the implementation.
-- Public live tests should eventually cover VOSI availability/capabilities/tables, TAP sync and async
-  lifecycle, SIA 2, SIA 1 surveys, one representative SCS catalogue, SSA, public DataLink, and the
-  event feed.
+- Public live tests (`tests/test_live.py`, `-m live`) cover VOSI availability/capabilities, TAP sync,
+  schema listing, SIA 2 cone, SIA 1 surveys, catalogue inventory, and the event feed when
+  `CASDA_RUN_LIVE_TESTS=true`.
 - Authenticated staging, cutout, spectrum, and download conformance must be reported separately from
-  mocked protocol coverage.
+  mocked protocol coverage and are never exercised by default live tests.
 - An upstream timeout or transient outage does not erase capability support; it must produce a
   bounded, retry-aware, accurately classified error.
 

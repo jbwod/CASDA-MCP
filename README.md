@@ -4,39 +4,41 @@
 `casda-mcp` is a conservative Model Context Protocol server for the
 [CSIRO ASKAP Science Data Archive (CASDA)](https://research.csiro.au/casda/). It converts an
 AI client's structured selections into explicit, auditable archive operations. The server does not
-interpret unrestricted natural language or expose a generic ADQL, URL-fetching, shell, deletion, or
-filesystem tool.
+interpret unrestricted natural language or expose URL-fetching, shell, or filesystem browsing tools.
+Advanced ADQL is optional and flag-gated (`CASDA_ENABLE_ADVANCED_ADQL`).
 
 The supported workflow is:
 
-1. Search bounded CASDA ObsCore metadata.
-2. Inspect one product or ASKAP scheduling block.
-3. Select explicit product identifiers.
-4. Optionally submit one authenticated SODA/UWS staging request.
-5. Check that request with a separate, single status call.
-6. Optionally download one archive-confirmed file into a restricted directory.
-7. Create a reproducible JSON manifest.
+1. Discover archive status, schemas, and VO holdings (VOSI, SIA/SCS/SSA, projects, events).
+2. Search bounded CASDA ObsCore metadata or run validated advanced ADQL when enabled.
+3. Inspect one product, ASKAP scheduling block, project, or collection.
+4. Select explicit product identifiers.
+5. Optionally submit authenticated SODA/UWS full-file, cutout, or spectrum jobs.
+6. Check that request with a separate, single status call (`casda_get_data_job` / staging alias).
+7. Optionally download archive-confirmed files into a restricted directory.
+8. Create a reproducible JSON manifest with collection metadata.
 
-Search and metadata inspection are enabled by default. Staging and downloads are disabled by
-default and require separate administrator configuration.
+Search and metadata inspection are enabled by default. Staging, downloads, and advanced ADQL are
+disabled by default and require separate administrator configuration.
 
 ## Status and confirmed interfaces
 
 The implementation uses these CASDA interfaces:
 
-- TAP 1.0/ADQL over `ivoa.obscore`, `casda.observation`, and `casda.project` for metadata;
+- TAP 1.0/ADQL (sync and async) with VOSI availability/capabilities and TAP_SCHEMA discovery;
+- SIA 2, SIA 1 (+ surveys), SCS catalogue cone search, and SSA spectrum discovery;
+- public observation events feed;
 - Datalink 1.1 VOTables for authenticated SODA service and opaque product-token discovery;
-- asynchronous SODA/UWS jobs for staging submission and one-shot status reads;
+- asynchronous SODA/UWS jobs for full-file staging, cutouts, spectrum generation, and one-shot status;
 - archive result URLs and checksum sidecars for streamed downloads.
 
-The public TAP availability, schema, product types, project joins, spatial intersection query, and a
-bounded cube search were validated live on 18 July 2026. Authenticated staging and downloads were
-not exercised live because no OPAL credentials were supplied; those paths are covered by mocked
-protocol, partial-failure, checksum, resumption, and filesystem tests.
+Public metadata paths were validated live on 18 July 2026. Optional `-m live` tests exercise
+read-only discovery when `CASDA_RUN_LIVE_TESTS=true`. Authenticated staging, cutout, and downloads
+are covered by mocked protocol tests and are never run by default live gates.
 
 The dated [CASDA capability matrix](docs/casda-capability-matrix.md) maps the complete public and
-authenticated protocol surface, current implementation status, planned MCP tools, and deliberate
-DAP-only boundaries. It distinguishes current tested coverage from the broader completion target.
+authenticated protocol surface, implementation status, remaining upstream/DAP boundaries, and MCP
+contract requirements.
 
 ## Requirements
 
@@ -65,8 +67,10 @@ Run the Streamable HTTP transport on loopback:
 uv run casda-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-The MCP endpoint is `http://127.0.0.1:8000/mcp`; the non-sensitive health endpoint is
-`http://127.0.0.1:8000/healthz`.
+The MCP endpoint is `http://127.0.0.1:8000/mcp`. Non-sensitive probes:
+
+- `http://127.0.0.1:8000/healthz` — process liveness
+- `http://127.0.0.1:8000/readyz` — readiness using last-known archive availability (never blocks on a live CASDA call)
 
 ## MCP client configuration
 
@@ -126,13 +130,21 @@ configuration fails fast.
 | --- | --- | --- |
 | `CASDA_BASE_URL` | `https://casda.csiro.au` | CASDA base host; HTTPS and no embedded credentials required. |
 | `CASDA_TAP_URL` | CASDA TAP sync URL | Fixed metadata query endpoint. Tool callers cannot override it. |
+| `CASDA_TAP_ASYNC_URL` | CASDA TAP async URL | Fixed async TAP/UWS endpoint for advanced ADQL jobs. |
 | `CASDA_DATALINK_URL` | CASDA proxy Datalink URL | Establishes an allowed CASDA host; product Datalink URLs still come from TAP. |
 | `CASDA_SODA_URL` | CASDA async SODA URL | Establishes the allowed staging host and documents the expected service. |
 | `CASDA_LOGIN_URL` | CASDA proxy TAP availability URL | Safe credential verification endpoint. |
+| `CASDA_SIA1_URL` | CASDA SIA 1 query URL | Legacy survey image discovery. |
+| `CASDA_SIA1_SURVEYS_URL` | CASDA SIA 1 surveys URL | Survey inventory. |
+| `CASDA_SIA2_URL` | CASDA SIA 2 query URL | Multidimensional image/cube discovery. |
+| `CASDA_SCS_BASE_URL` | CASDA SCS base URL | Catalogue cone-search base (`/{short_name}` appended). |
+| `CASDA_SSA_URL` | CASDA SSA query URL | Spectrum discovery. |
+| `CASDA_EVENTS_URL` | CASDA observation events URL | Public lifecycle/event feed. |
 | `CASDA_USERNAME` | unset | OPAL username. Required with `CASDA_PASSWORD` for staging. |
 | `CASDA_PASSWORD` | unset | OPAL password. Stored as a secret value and never logged. |
-| `CASDA_ENABLE_STAGING` | `false` | Enables archive-side request creation only when OPAL credentials are complete. |
+| `CASDA_ENABLE_STAGING` | `false` | Enables archive-side full-file/cutout/spectrum job creation when OPAL credentials are complete. |
 | `CASDA_ENABLE_DOWNLOADS` | `false` | Enables local file writes. |
+| `CASDA_ENABLE_ADVANCED_ADQL` | `false` | Enables `casda_tap_query` / async TAP submit after SELECT-only validation. |
 | `CASDA_DOWNLOAD_DIR` | unset | Required absolute, dedicated containment directory when downloads are enabled; filesystem roots are rejected, including through symlinks. |
 | `CASDA_ALLOW_OVERWRITE` | `false` | Allows atomic replacement of an existing destination. Keep false normally. |
 | `CASDA_MAX_RESULTS` | `100` | Maximum bounded search window, up to a hard limit of 1000. |
@@ -189,21 +201,37 @@ reservations are removed after failure.
 
 ## Tools
 
-Every normal tool response has operation-specific data, `provenance`, and an optional structured
-`error`. Provenance contains the server version, archive, timestamps, deterministic query identifier,
-sanitised endpoint, parameters, result count, cache status, and correlation identifier. Credentials
-and URL query strings are not included.
+Successful tool responses carry operation-specific data and `provenance`. Failures use protocol-level
+`ToolError` / `isError` rather than a successful envelope with an `error` field. Provenance contains
+the server version, archive, timestamps, deterministic query identifier, sanitised endpoint,
+parameters, result count, cache status, and correlation identifier. Credentials and URL query strings
+are not included.
+
+Discovery and job tools beyond the core ObsCore path include:
+
+| Group | Tools |
+| --- | --- |
+| Archive / TAP_SCHEMA | `casda_get_archive_status`, `casda_list_capabilities`, `casda_list_schemas`, `casda_list_tables`, `casda_describe_table`, `casda_list_foreign_keys` |
+| VO search | `casda_search_images`, `casda_list_image_surveys`, `casda_search_survey_images`, `casda_list_catalogues`, `casda_search_catalogue`, `casda_search_spectra` |
+| Projects / events | `casda_search_projects`, `casda_get_project`, `casda_get_collection`, `casda_list_events` |
+| Advanced ADQL | `casda_build_adql`, `casda_validate_adql`, `casda_tap_query`, `casda_submit_tap_query`, `casda_get_tap_job`, `casda_get_tap_results`, `casda_abort_tap_job`, `casda_delete_tap_job` |
+| DataLink / jobs | `casda_get_auth_status`, `casda_get_datalink`, `casda_create_cutout`, `casda_create_spectrum`, `casda_get_data_job`, `casda_get_data_job_results`, `casda_abort_data_job`, `casda_delete_data_job`, `casda_download_job_results`, `casda_verify_file` |
+
+The full name inventory is asserted in `tests/test_contract.py`.
 
 ### `casda_search_products`
 
 Read-only bounded product discovery. Supported filters are exact source/target name, ICRS position
 and radius in degrees, OPAL project code, ASKAP SBID, overlapping ISO 8601 observation dates,
-overlapping frequencies in hertz, exact collection, and these allowlisted product types:
+overlapping frequencies in hertz, exact collection, facility/instrument names, and these allowlisted
+product types:
 
-`image`, `cube`, `visibility`, `spectrum`, `catalogue`, `weight`, `moment_map`.
+`image`, `cube`, `visibility`, `spectrum`, `catalogue`, `weight`, `moment_map`, `cubelet`,
+`evaluation`, `scan`.
 
-It supports bounded one-based pagination and allowlisted sorting. It does not resolve astronomical
-names, execute caller-supplied ADQL, stage, or download.
+It supports bounded pagination (page or opaque `cursor`) and allowlisted sorting. It does not resolve
+astronomical names, stage, or download. Caller-supplied ADQL belongs on the flag-gated advanced
+tools, not this helper.
 
 ```json
 {
@@ -287,6 +315,12 @@ The result includes the confirmed local path, actual bytes, Content-Length verif
 result, whether a Range retry resumed within this call, staging request ID, and provenance. A local
 path is never returned before the final file exists. The server does not expose a deletion tool.
 
+### `casda_create_cutout` / `casda_create_spectrum`
+
+Authenticated SODA jobs (require staging enabled + OPAL). Supply `CIRCLE` / `POLYGON` / `BAND` /
+`CHANNEL` / `POL` / `COORD` as documented by CASDA DataLink descriptors. Monitor with
+`casda_get_data_job`, then download via `casda_download_product` or `casda_download_job_results`.
+
 ### `casda_create_manifest`
 
 Creates and retains a schema-versioned JSON manifest in server state:
@@ -302,9 +336,10 @@ Creates and retains a schema-versioned JSON manifest in server state:
 
 The manifest includes a deterministic SHA-256 identifier, creation time, full typed product
 metadata, filenames, estimated file sizes, available checksums, SBIDs, project codes, types, spatial
-and spectral metadata, access state, known originating search criteria, provenance, and server
-version. Archive artifact URLs are never persisted in manifests because opaque paths may be
-short-lived bearer credentials even when they contain no query string.
+and spectral metadata, access state, collection metadata (`obs_collection`, `facility_name`, release
+span), known originating search criteria, provenance, and server version. Archive artifact URLs are
+never persisted in manifests because opaque paths may be short-lived bearer credentials even when
+they contain no query string. Machine DOI resolve remains upstream-dependent.
 
 ## Resources
 
@@ -313,7 +348,10 @@ The server exposes read-only resources:
 - `casda://products/{product_id}`
 - `casda://observations/{scheduling_block_id}`
 - `casda://staging/{request_id}`
+- `casda://events/{event_id}`
 - `casda://manifests/{manifest_id}`
+- `casda://archive/status`
+- `casda://archive/capabilities`
 - `casda://server/status`
 - `casda://skills` (JSON index of packaged agent skills)
 - `casda://skills/{skill_name}` (raw `SKILL.md` markdown)
@@ -323,16 +361,18 @@ query strings. The staging resource performs one current status read, like the t
 
 ## Prompts
 
-Registered MCP prompts guide safe workflows without inventing unsupported archive operations:
+Registered MCP prompts guide safe workflows:
 
 | Prompt | Purpose |
 | --- | --- |
 | `find-and-inspect-products` | Bounded search, then inspect selected products or ASKAP observations |
-| `query-catalogue` | ObsCore search with `product_types=["catalogue"]` only |
+| `query-tables` | `list_schemas` → `list_tables` → `describe_table` |
+| `run-adql` | Validate then `tap_query` / submit (requires `CASDA_ENABLE_ADVANCED_ADQL`) |
+| `query-catalogue` | `casda_list_catalogues` / `casda_search_catalogue`, with ObsCore catalogue fallback |
 | `stage-and-download` | Stage explicit IDs, one-shot status checks, guarded download |
+| `make-cutout` | `casda_create_cutout` → `casda_get_data_job` → download |
 | `build-reproducible-selection` | Create a manifest without persisting artifact URLs |
-| `monitor-releases` | Release fields via search/get_product; events feed not exposed |
-| `make-cutout` | Explicit unsupported notice; no cutout tool to call |
+| `monitor-releases` | Release fields via search/get_product; `casda_list_events` when useful |
 
 ## Agent skills
 
@@ -373,9 +413,23 @@ selection rule has not been established. WALLABY-specific rules should remain a 
 
 1. Inspect the selected product and size.
 2. Call `casda_stage_products` with explicit IDs and an idempotency key.
-3. Later, call `casda_get_staging_status`; do not assume automatic polling.
-4. Only after `ready_for_download` is true, call `casda_download_product`.
+3. Later, call `casda_get_staging_status` or `casda_get_data_job`; do not assume automatic polling.
+4. Only after products are ready, call `casda_download_product`.
 5. Check returned length and checksum fields.
+
+### Cutout
+
+1. Enable staging and configure OPAL credentials.
+2. Call `casda_create_cutout` with an explicit `product_id` and SODA constraints (for example `circle`).
+3. Poll with `casda_get_data_job`.
+4. Download with `casda_download_product` or `casda_download_job_results` when downloads are enabled.
+
+### Advanced ADQL
+
+1. Set `CASDA_ENABLE_ADVANCED_ADQL=true`.
+2. Prefer `casda_build_adql` or carefully drafted SELECT-only ADQL.
+3. Call `casda_validate_adql`, then `casda_tap_query` or `casda_submit_tap_query`.
+4. Prefer `casda_search_products` / VO discovery tools when allowlisted filters suffice.
 
 ### Reproducible workflow manifest
 
@@ -403,6 +457,10 @@ selection rule has not been established. WALLABY-specific rules should remain a 
 - Streamable HTTP binds to loopback by default and has no built-in client authentication. Put a
   production remote deployment behind TLS and an authenticating reverse proxy or MCP authorization
   layer. Do not expose it directly when staging, credentials, or downloads are enabled.
+- Principal isolation is process-scoped: credentials, authorization results, job state, ready URLs,
+  caches, and manifests are not multiplexed safely across remote users in one process. For remote
+  multi-user deployments, run **one process per principal** (or an equivalent front end that never
+  shares a process across principals).
 - `CASDA_STATE_DB` may contain short-lived signed URLs needed to resume status/download workflows.
   The server rejects symlink/non-file targets and forces owner-only file permissions on POSIX;
   deployments should additionally use an owner-controlled directory and encrypted storage.
@@ -414,11 +472,11 @@ See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.
 
 ```text
 MCP client
-  -> typed FastMCP tools/resources
+  -> typed FastMCP tools/resources/prompts
   -> CasdaService (validation, limits, idempotency, provenance)
-  -> QueryBuilder / parsers / TTL cache / StateStore
+  -> QueryBuilder / adql / vosi / cursor / parsers / TTL cache / StateStore
   -> CasdaClient (pooled HTTP, retries, host validation, OPAL auth)
-  -> CASDA TAP | Datalink | SODA/UWS | staged file endpoint
+  -> CASDA TAP | VOSI | SIA/SCS/SSA | events | Datalink | SODA/UWS | staged file endpoint
 ```
 
 The modules are deliberately separated so CASDA protocol behavior does not depend on a particular AI
@@ -443,13 +501,15 @@ pagination, CSV/VOTable/UWS parsing, redaction, caching, error mapping, idempote
 path traversal, overwrite prevention, streamed byte limits, checksum mismatch cleanup, Range resume,
 manifest determinism, MCP schemas, resources, health, and mocked end-to-end HTTP behavior.
 
-Optional live tests are metadata-only and disabled by default:
+Optional live tests are read-only discovery checks and disabled by default:
 
 ```bash
 CASDA_RUN_LIVE_TESTS=true uv run pytest -m live -v
 ```
 
-They use a small public cone search and never stage or download. CI does not require credentials.
+They cover VOSI availability/capabilities, a small TAP sync query, schema listing, SIA 2 cone, SIA 1
+surveys, catalogue inventory, and the events feed. They never stage, download, or create cutouts.
+CI does not require credentials.
 
 ## Container
 
@@ -484,13 +544,15 @@ secrets only when explicitly enabling downloads or staging.
 
 ## Known limitations
 
-- Authenticated staging and file download behavior is protocol-tested with mocks, not live-validated
-  in this repository run.
+- Authenticated staging, cutout, spectrum, and file download behavior is protocol-tested with mocks;
+  default live tests never exercise those paths.
 - ASKAP SBID product relationships use the confirmed ObsCore `obs_id = 'ASKAP-<sbid>'` convention.
 - Project codes are joined where `ivoa.obscore.obs_collection` matches
   `casda.project.short_name`; CASDA does not expose a direct generic project foreign key in ObsCore.
 - CASDA's current ADQL service does not support `CURRENT_TIMESTAMP`; public-only search retrieves the
   configured bounded window and removes future release dates locally.
+- Advanced ADQL remains SELECT-only, length/row bounded, and disabled until
+  `CASDA_ENABLE_ADVANCED_ADQL=true`.
 - UWS reports an overall job phase. A product is marked individually ready only when a completed job
   returns its unique product result identifier. A globally unambiguous filename fallback is retained
   for historical jobs; ambiguous results remain `UNKNOWN`.
@@ -499,8 +561,8 @@ secrets only when explicitly enabling downloads or staging.
   temporary file, so resumption does not persist across separate calls. An abrupt process or host
   termination can leave a hashed lock in `.casda-mcp/locks` that an operator must inspect and remove
   before retrying that exact destination.
-- Source-name resolution and row-level catalogue science queries are outside this server. No generic
-  unrestricted ADQL tool is exposed.
+- Source-name resolution is outside this server. Pawsey staging and machine DOI resolve remain
+  upstream-dependent / DAP-boundary.
 - Beam identifiers may be retained in filenames or target metadata, but CASDA ObsCore does not expose
   a generic structured neighbouring-beam relationship used by this implementation.
 

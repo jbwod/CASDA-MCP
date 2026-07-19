@@ -78,6 +78,8 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "stage-and-download",
         "build-reproducible-selection",
         "query-catalogue",
+        "query-tables",
+        "run-adql",
         "make-cutout",
         "monitor-releases",
     }
