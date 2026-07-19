@@ -4,11 +4,8 @@ import httpx
 
 from casda_mcp.server import create_http_app, create_mcp_server
 
-
-async def test_initial_tool_names_and_required_product_schema(settings) -> None:
-    server = create_mcp_server()
-    tools = await server.list_tools()
-    assert {tool.name for tool in tools} == {
+EXPECTED_TOOL_NAMES = frozenset(
+    {
         "casda_search_products",
         "casda_get_product",
         "casda_get_observation",
@@ -51,6 +48,28 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda_download_product",
         "casda_create_manifest",
     }
+)
+
+EXPECTED_PROMPT_NAMES = frozenset(
+    {
+        "find-and-inspect-products",
+        "stage-and-download",
+        "build-reproducible-selection",
+        "query-catalogue",
+        "query-tables",
+        "run-adql",
+        "make-cutout",
+        "monitor-releases",
+    }
+)
+
+
+async def test_initial_tool_names_and_required_product_schema(settings) -> None:
+    server = create_mcp_server()
+    tools = await server.list_tools()
+    tool_names = frozenset(tool.name for tool in tools)
+    assert len(tool_names) == len(EXPECTED_TOOL_NAMES)
+    assert tool_names == EXPECTED_TOOL_NAMES
     product_tool = next(tool for tool in tools if tool.name == "casda_get_product")
     assert product_tool.inputSchema["required"] == ["product_id"]
     assert product_tool.outputSchema is not None
@@ -73,16 +92,9 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda://archive/capabilities",
     }
     prompts = await server.list_prompts()
-    assert {prompt.name for prompt in prompts} == {
-        "find-and-inspect-products",
-        "stage-and-download",
-        "build-reproducible-selection",
-        "query-catalogue",
-        "query-tables",
-        "run-adql",
-        "make-cutout",
-        "monitor-releases",
-    }
+    prompt_names = frozenset(prompt.name for prompt in prompts)
+    assert len(prompt_names) == len(EXPECTED_PROMPT_NAMES)
+    assert prompt_names == EXPECTED_PROMPT_NAMES
     service = server.casda_service  # type: ignore[attr-defined]
     await service.aclose()
 
