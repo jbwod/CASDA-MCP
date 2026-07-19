@@ -7,7 +7,7 @@ from typing import Any
 from defusedxml import ElementTree
 
 from casda_mcp.errors import CasdaError
-from casda_mcp.models import ArchiveAvailability, Capability
+from casda_mcp.models import ArchiveAvailability, Capability, TapExample
 
 XSI_TYPE = "{http://www.w3.org/2001/XMLSchema-instance}type"
 
@@ -108,3 +108,43 @@ def parse_vosi_capabilities(content: bytes) -> list[Capability]:
             )
         )
     return capabilities
+
+
+def parse_tap_examples(content: bytes) -> list[TapExample]:
+    """Parse a DALI/TAP examples document into named ADQL examples when possible."""
+
+    stripped = content.lstrip()
+    if not stripped.startswith(b"<") and not stripped.startswith(b"<?xml"):
+        text = content.decode("utf-8", errors="replace").strip()
+        if not text:
+            return []
+        return [TapExample(name="document", description=None, query=text[:8000])]
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned malformed TAP examples XML."
+        ) from exc
+    examples: list[TapExample] = []
+    for example in root.iter():
+        if _local_name(example.tag) != "example":
+            continue
+        name = (
+            (example.attrib.get("name") or "").strip()
+            or _child_text(example, "name")
+            or _child_text(example, "title")
+        )
+        description = _child_text(example, "description") or _child_text(example, "info")
+        query = _child_text(example, "query") or _child_text(example, "adql")
+        if query is None:
+            for child in example:
+                if _local_name(child.tag) in {"query", "adql"}:
+                    query = (child.text or "").strip() or None
+                    break
+        if name or description or query:
+            examples.append(TapExample(name=name, description=description, query=query))
+    if examples:
+        return examples
+    # Fall back to a single document capture when the schema is unfamiliar.
+    text = ElementTree.tostring(root, encoding="unicode")
+    return [TapExample(name="document", description=None, query=text[:8000])]

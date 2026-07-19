@@ -63,7 +63,7 @@ deployment on 18 July 2026. Standard behavior is defined by the linked IVOA spec
 | TAP availability | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/availability` | Public | **Implemented**: `casda_get_archive_status`; `vosi.py`, `tests/test_discovery.py` |
 | TAP capabilities | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/capabilities` | Public | **Implemented**: `casda_list_capabilities` |
 | TAP schemas and tables | VOSI | `https://casda.csiro.au/casda_vo_tools/tap/tables` | Public | **Implemented** via TAP_SCHEMA tools (`casda_list_schemas`, `casda_list_tables`, `casda_describe_table`, `casda_list_foreign_keys`) |
-| TAP examples | TAP examples | `https://casda.csiro.au/casda_vo_tools/tap/examples` | Public | **Planned** as a dedicated examples surface (capabilities already exposed) |
+| TAP examples | TAP examples | `https://casda.csiro.au/casda_vo_tools/tap/examples` | Public | **Implemented** via `casda_list_tap_examples` |
 | Multidimensional image discovery | SIA 2.0 | `https://casda.csiro.au/casda_vo_tools/sia2/query` | Public discovery | **Implemented**: `casda_search_images`; `tests/test_vo_search.py` |
 | Legacy image discovery | SIA 1.0 | `https://casda.csiro.au/casda_vo_tools/sia1/query` | Public discovery | **Implemented**: `casda_search_survey_images` |
 | Image survey inventory | CASDA SIA extension | `https://casda.csiro.au/casda_vo_tools/sia1/surveys` | Public | **Implemented**: `casda_list_image_surveys` |

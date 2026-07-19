@@ -15,6 +15,7 @@ EXPECTED_TOOL_NAMES = frozenset(
         "casda_list_events",
         "casda_get_archive_status",
         "casda_list_capabilities",
+        "casda_list_tap_examples",
         "casda_list_schemas",
         "casda_list_tables",
         "casda_describe_table",

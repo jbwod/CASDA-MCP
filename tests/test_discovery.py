@@ -11,7 +11,7 @@ from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.query import QueryBuilder, validate_schema_name, validate_table_name
 from casda_mcp.service import CasdaService
-from casda_mcp.vosi import parse_vosi_availability, parse_vosi_capabilities
+from casda_mcp.vosi import parse_tap_examples, parse_vosi_availability, parse_vosi_capabilities
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -54,6 +54,14 @@ def test_parse_vosi_availability_rejects_malformed_xml() -> None:
     with pytest.raises(CasdaError) as error:
         parse_vosi_availability(b"<not-availability/>")
     assert error.value.code == "MALFORMED_ARCHIVE_RESPONSE"
+
+
+def test_parse_tap_examples() -> None:
+    examples = parse_tap_examples((FIXTURES / "tap_examples.xml").read_bytes())
+    assert len(examples) == 1
+    assert examples[0].name == "obscore-cone"
+    assert examples[0].query is not None
+    assert "ivoa.obscore" in examples[0].query
 
 
 def test_schema_and_table_name_validation() -> None:
@@ -108,6 +116,25 @@ async def test_list_capabilities_via_client() -> None:
         assert len(response.capabilities) == 4
         assert response.capabilities[2].standard_id == "ivo://ivoa.net/std/TAP"
         assert response.provenance is not None
+    finally:
+        await service.aclose()
+
+
+@respx.mock
+async def test_list_tap_examples() -> None:
+    respx.get("https://casda.csiro.au/casda_vo_tools/tap/examples").mock(
+        return_value=httpx.Response(
+            200,
+            content=(FIXTURES / "tap_examples.xml").read_bytes(),
+            headers={"Content-Type": "application/xml"},
+        )
+    )
+    service = CasdaService(Settings(_env_file=None, max_retries=0))
+    try:
+        response = await service.list_tap_examples()
+        assert len(response.examples) == 1
+        assert response.examples[0].name == "obscore-cone"
+        assert response.content_type == "application/xml"
     finally:
         await service.aclose()
 

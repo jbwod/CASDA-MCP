@@ -378,6 +378,12 @@ class Capability(BaseModel):
     interface_version: str | None = None
 
 
+class TapExample(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    query: str | None = None
+
+
 class SchemaInfo(BaseModel):
     schema_name: str
     description: str | None = None
@@ -422,6 +428,13 @@ class GetArchiveStatusResponse(BaseModel):
 
 class ListCapabilitiesResponse(BaseModel):
     capabilities: list[Capability] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListTapExamplesResponse(BaseModel):
+    examples: list[TapExample] = Field(default_factory=list)
+    content_type: str | None = None
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
 

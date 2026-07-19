@@ -43,6 +43,7 @@ from casda_mcp.models import (
     ListImageSurveysResponse,
     ListSchemasResponse,
     ListTablesResponse,
+    ListTapExamplesResponse,
     SearchCatalogueResponse,
     SearchImagesResponse,
     SearchProductsResponse,
@@ -310,6 +311,16 @@ def create_mcp_server(
         """List VOSI capabilities advertised by the configured public CASDA TAP service."""
         try:
             return await service.list_capabilities()
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA TAP examples", annotations=_READ_ONLY)
+    async def casda_list_tap_examples() -> ListTapExamplesResponse:
+        """List example ADQL queries advertised by the CASDA TAP examples endpoint."""
+        try:
+            return await service.list_tap_examples()
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:

@@ -18,7 +18,7 @@ import httpx
 
 from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError, map_http_error
-from casda_mcp.models import ArchiveAvailability, Capability, ObservationEvent
+from casda_mcp.models import ArchiveAvailability, Capability, ObservationEvent, TapExample
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import (
     DatalinkAccess,
@@ -33,7 +33,7 @@ from casda_mcp.parsers import (
     parse_votable_rows,
 )
 from casda_mcp.provenance import sanitize_url
-from casda_mcp.vosi import parse_vosi_availability, parse_vosi_capabilities
+from casda_mcp.vosi import parse_tap_examples, parse_vosi_availability, parse_vosi_capabilities
 
 LOGGER = logging.getLogger(__name__)
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -124,6 +124,16 @@ class CasdaClient:
             correlation_id=correlation_id,
         )
         return parse_vosi_capabilities(response.content)
+
+    async def get_tap_examples(self, *, correlation_id: str) -> tuple[list[TapExample], str | None]:
+        response = await self.request(
+            "GET",
+            f"{self.settings.tap_base_url}/examples",
+            headers={"Accept": "application/xml, text/xml, text/plain, */*"},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_tap_examples(response.content), response.headers.get("Content-Type")
 
     async def sia2_query(
         self, params: list[tuple[str, str]], *, correlation_id: str

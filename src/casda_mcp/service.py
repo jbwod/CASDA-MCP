@@ -57,6 +57,7 @@ from casda_mcp.models import (
     ListImageSurveysResponse,
     ListSchemasResponse,
     ListTablesResponse,
+    ListTapExamplesResponse,
     Manifest,
     ManifestProduct,
     Pagination,
@@ -191,6 +192,23 @@ class CasdaService:
                 endpoint=endpoint,
                 parameters={},
                 result_count=len(capabilities),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_tap_examples(self) -> ListTapExamplesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        endpoint = f"{self.settings.tap_base_url}/examples"
+        examples, content_type = await self.client.get_tap_examples(correlation_id=correlation_id)
+        return ListTapExamplesResponse(
+            examples=examples,
+            content_type=content_type,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=endpoint,
+                parameters={},
+                result_count=len(examples),
                 correlation_id=correlation_id,
             ),
         )
