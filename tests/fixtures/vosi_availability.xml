@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<availability xmlns="http://www.ivoa.net/xml/VOSIAvailability/v1.0">
+  <available>true</available>
+  <upSince>2026-07-17T16:03:45.037Z</upSince>
+  <note>CASDA TAP is operating normally</note>
+</availability>

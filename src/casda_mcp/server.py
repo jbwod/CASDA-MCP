@@ -20,9 +20,15 @@ from casda_mcp import __version__
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
     CreateManifestResponse,
+    DescribeTableResponse,
     DownloadProductResponse,
+    GetArchiveStatusResponse,
     GetObservationResponse,
     GetProductResponse,
+    ListCapabilitiesResponse,
+    ListForeignKeysResponse,
+    ListSchemasResponse,
+    ListTablesResponse,
     SearchProductsResponse,
     StageProductsResponse,
     StagingStatusResponse,
@@ -250,6 +256,118 @@ def create_mcp_server(
         """
         try:
             return await service.get_product(product_id)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA archive status", annotations=_READ_ONLY)
+    async def casda_get_archive_status() -> GetArchiveStatusResponse:
+        """Read VOSI availability for the configured public CASDA TAP service.
+
+        This is archive availability, not local process liveness. Prefer /healthz for the
+        MCP server itself.
+        """
+        try:
+            return await service.get_archive_status()
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA capabilities", annotations=_READ_ONLY)
+    async def casda_list_capabilities() -> ListCapabilitiesResponse:
+        """List VOSI capabilities advertised by the configured public CASDA TAP service."""
+        try:
+            return await service.list_capabilities()
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA schemas", annotations=_READ_ONLY)
+    async def casda_list_schemas(
+        page_size: Annotated[
+            int,
+            Field(
+                description="Number of schemas to return; bounded by server configuration.",
+                ge=1,
+            ),
+        ] = 25,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque next-page cursor from a previous schema list response."),
+        ] = None,
+    ) -> ListSchemasResponse:
+        """List TAP_SCHEMA schemas with bounded cursor pagination."""
+        try:
+            return await service.list_schemas(cursor=cursor, page_size=page_size)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA tables", annotations=_READ_ONLY)
+    async def casda_list_tables(
+        schema_name: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional TAP schema filter such as ivoa, casda, TAP_SCHEMA, or AS102."
+                )
+            ),
+        ] = None,
+        page_size: Annotated[
+            int,
+            Field(
+                description="Number of tables to return; bounded by server configuration.",
+                ge=1,
+            ),
+        ] = 25,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque next-page cursor from a previous table list response."),
+        ] = None,
+    ) -> ListTablesResponse:
+        """List TAP_SCHEMA tables, optionally filtered by schema, with cursor pagination."""
+        try:
+            return await service.list_tables(
+                schema_name=schema_name, cursor=cursor, page_size=page_size
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Describe CASDA table", annotations=_READ_ONLY)
+    async def casda_describe_table(
+        schema_name: Annotated[
+            str, Field(description="TAP schema name such as ivoa, casda, or AS102.")
+        ],
+        table_name: Annotated[
+            str, Field(description="Unqualified TAP table name such as obscore or catalogue.")
+        ],
+    ) -> DescribeTableResponse:
+        """Describe columns for one TAP_SCHEMA table identified by schema and table name."""
+        try:
+            return await service.describe_table(schema_name, table_name)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA foreign keys", annotations=_READ_ONLY)
+    async def casda_list_foreign_keys(
+        schema_name: Annotated[
+            str, Field(description="TAP schema name such as ivoa, casda, or AS102.")
+        ],
+        table_name: Annotated[
+            str, Field(description="Unqualified TAP table name such as catalogue.")
+        ],
+    ) -> ListForeignKeysResponse:
+        """List TAP_SCHEMA foreign keys that originate from the requested table."""
+        try:
+            return await service.list_foreign_keys(schema_name, table_name)
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:
@@ -609,6 +727,22 @@ def create_mcp_server(
             "planned and not exposed as an MCP tool or resource yet.\n"
             "4. Do not scrape the DAP for release notices."
         )
+
+    @mcp.resource("casda://archive/status", mime_type="application/json")
+    async def archive_status_resource() -> str:
+        """Read-only VOSI availability for the configured public CASDA TAP service."""
+        try:
+            return (await service.get_archive_status()).model_dump_json(exclude_none=True)
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
+
+    @mcp.resource("casda://archive/capabilities", mime_type="application/json")
+    async def archive_capabilities_resource() -> str:
+        """Read-only VOSI capabilities for the configured public CASDA TAP service."""
+        try:
+            return (await service.list_capabilities()).model_dump_json(exclude_none=True)
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
 
     @mcp.resource("casda://skills", mime_type="application/json")
     async def skills_index_resource() -> str:

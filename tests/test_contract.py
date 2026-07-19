@@ -12,6 +12,12 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda_search_products",
         "casda_get_product",
         "casda_get_observation",
+        "casda_get_archive_status",
+        "casda_list_capabilities",
+        "casda_list_schemas",
+        "casda_list_tables",
+        "casda_describe_table",
+        "casda_list_foreign_keys",
         "casda_stage_products",
         "casda_get_staging_status",
         "casda_download_product",
@@ -34,6 +40,8 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
     assert {str(resource.uri) for resource in static_resources} >= {
         "casda://server/status",
         "casda://skills",
+        "casda://archive/status",
+        "casda://archive/capabilities",
     }
     prompts = await server.list_prompts()
     assert {prompt.name for prompt in prompts} == {

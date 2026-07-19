@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<availability xmlns="http://www.ivoa.net/xml/VOSIAvailability/v1.0">
+  <available>false</available>
+  <note>Scheduled maintenance</note>
+  <note>Retry later</note>
+</availability>

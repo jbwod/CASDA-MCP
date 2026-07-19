@@ -14,6 +14,7 @@ PRODUCT_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.:-]{0,127}$")
 PROJECT_CODE_RE = re.compile(r"^[A-Z]{2,4}[0-9]{2,6}$")
 TEXT_RE = re.compile(r"^[\w .+:/()'-]{1,160}$", re.UNICODE)
 IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 SORT_FIELDS = {
     "product_id": "o.obs_publisher_did",
@@ -37,8 +38,7 @@ PRODUCT_TYPE_CLAUSES = {
     "moment_map": "o.dataproduct_subtype LIKE 'spectral.restored.mom%'",
     "cubelet": "o.dataproduct_subtype LIKE '%cubelet%'",
     "evaluation": (
-        "(o.obs_publisher_did LIKE 'evaluation-%' "
-        "OR o.dataproduct_subtype LIKE '%evaluation%')"
+        "(o.obs_publisher_did LIKE 'evaluation-%' OR o.dataproduct_subtype LIKE '%evaluation%')"
     ),
     "scan": "o.obs_publisher_did LIKE 'scan-%'",
 }
@@ -70,6 +70,34 @@ def validate_idempotency_key(value: str) -> str:
     if not IDEMPOTENCY_RE.fullmatch(normalized):
         raise ValidationError("Invalid idempotency key.")
     return normalized
+
+
+def validate_schema_name(value: str) -> str:
+    """Validate a TAP schema identifier such as ivoa, casda, TAP_SCHEMA, or AS102."""
+
+    normalized = value.strip()
+    if not IDENTIFIER_RE.fullmatch(normalized):
+        raise ValidationError(
+            "schema_name must be a simple identifier.",
+            details={"schema_name": value},
+        )
+    return normalized
+
+
+def validate_table_name(value: str) -> str:
+    """Validate an unqualified TAP table identifier."""
+
+    normalized = value.strip()
+    if not IDENTIFIER_RE.fullmatch(normalized):
+        raise ValidationError(
+            "table_name must be a simple identifier.",
+            details={"table_name": value},
+        )
+    return normalized
+
+
+def qualified_table_name(schema_name: str, table_name: str) -> str:
+    return f"{validate_schema_name(schema_name)}.{validate_table_name(table_name)}"
 
 
 def adql_string(value: str, *, field: str) -> str:
@@ -255,6 +283,54 @@ class QueryBuilder:
             f"WHERE o.obs_id = {obs_literal} ORDER BY o.obs_publisher_did ASC"
         )
         return query, fetch_count
+
+    def build_list_schemas(self, *, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        return (
+            f"SELECT TOP {fetch_count} schema_name, description "
+            "FROM TAP_SCHEMA.schemas ORDER BY schema_name ASC"
+        )
+
+    def build_list_tables(self, *, schema_name: str | None, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        if schema_name is None:
+            return (
+                f"SELECT TOP {fetch_count} table_name, schema_name, table_type, description "
+                "FROM TAP_SCHEMA.tables ORDER BY schema_name ASC, table_name ASC"
+            )
+        schema = validate_schema_name(schema_name)
+        return (
+            f"SELECT TOP {fetch_count} table_name, schema_name, table_type, description "
+            f"FROM TAP_SCHEMA.tables WHERE schema_name = '{schema}' "
+            "ORDER BY schema_name ASC, table_name ASC"
+        )
+
+    def build_describe_table(self, schema_name: str, table_name: str, *, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        qualified = qualified_table_name(schema_name, table_name)
+        return (
+            f"SELECT TOP {fetch_count} column_name, datatype, size, ucd, unit, utype, "
+            "description, principal, indexed, std "
+            f"FROM TAP_SCHEMA.columns WHERE table_name = '{qualified}' "
+            "ORDER BY column_name ASC"
+        )
+
+    def build_list_foreign_keys(
+        self, schema_name: str, table_name: str, *, fetch_count: int
+    ) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        qualified = qualified_table_name(schema_name, table_name)
+        return (
+            f"SELECT TOP {fetch_count} k.key_id, k.from_table, k.target_table, k.description, "
+            "kc.from_column, kc.target_column "
+            "FROM TAP_SCHEMA.keys AS k JOIN TAP_SCHEMA.key_columns AS kc "
+            f"ON k.key_id = kc.key_id WHERE k.from_table = '{qualified}' "
+            "ORDER BY k.key_id ASC, kc.from_column ASC"
+        )
 
     def _validate_search(self, criteria: SearchCriteria) -> None:
         spatial = (criteria.ra_deg, criteria.dec_deg, criteria.radius_deg)

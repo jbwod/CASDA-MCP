@@ -15,22 +15,32 @@ from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
 from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
 from casda_mcp.downloads import Downloader
-from casda_mcp.errors import CasdaError
+from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
+    ColumnInfo,
     CreateManifestResponse,
+    DescribeTableResponse,
     DownloadProductResponse,
+    ForeignKeyInfo,
+    GetArchiveStatusResponse,
     GetObservationResponse,
     GetProductResponse,
+    ListCapabilitiesResponse,
+    ListForeignKeysResponse,
+    ListSchemasResponse,
+    ListTablesResponse,
     Manifest,
     ManifestProduct,
     Pagination,
     Product,
     ReadyArtifact,
+    SchemaInfo,
     SearchProductsResponse,
     StageProductsResponse,
     StagingItem,
     StagingRequest,
     StagingStatusResponse,
+    TableInfo,
     UwsResult,
 )
 from casda_mcp.observability import Metrics
@@ -42,6 +52,8 @@ from casda_mcp.query import (
     normalize_product_id,
     normalize_product_ids,
     validate_idempotency_key,
+    validate_schema_name,
+    validate_table_name,
 )
 from casda_mcp.state import StateStore
 
@@ -92,12 +104,333 @@ class CasdaService:
             "detail": self._archive_status_detail,
         }
 
-    def note_archive_availability(
-        self, available: bool, *, detail: str | None = None
-    ) -> None:
+    def note_archive_availability(self, available: bool, *, detail: str | None = None) -> None:
         self._archive_available = available
         self._archive_status_checked_at = utc_now()
         self._archive_status_detail = detail
+
+    async def get_archive_status(self) -> GetArchiveStatusResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        endpoint = f"{self.settings.tap_base_url}/availability"
+        availability = await self.client.get_availability(correlation_id=correlation_id)
+        detail = (
+            "; ".join(availability.notes)
+            if availability.notes
+            else ("available" if availability.available else "unavailable")
+        )
+        self.note_archive_availability(availability.available, detail=detail)
+        return GetArchiveStatusResponse(
+            availability=availability,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=endpoint,
+                parameters={},
+                result_count=1,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_capabilities(self) -> ListCapabilitiesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        endpoint = f"{self.settings.tap_base_url}/capabilities"
+        capabilities = await self.client.get_capabilities(correlation_id=correlation_id)
+        return ListCapabilitiesResponse(
+            capabilities=capabilities,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=endpoint,
+                parameters={},
+                result_count=len(capabilities),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_schemas(
+        self,
+        *,
+        cursor: str | None = None,
+        page_size: int = 25,
+    ) -> ListSchemasResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        page_size = self._validate_page_size(page_size)
+        parameters = {"page_size": page_size}
+        bound_hash = query_hash(parameters)
+        page = 1
+        if cursor:
+            offset, page_size = decode_cursor(cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+        else:
+            offset = 0
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_list_schemas(fetch_count=fetch_count),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        schemas = [
+            SchemaInfo(schema_name=name, description=row.get("description"))
+            for row in rows
+            if (name := row.get("schema_name"))
+        ]
+        end = min(offset + page_size, self.settings.max_results, len(schemas))
+        page_schemas = schemas[offset:end]
+        has_more = len(schemas) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
+        return ListSchemasResponse(
+            schemas=page_schemas,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                returned=len(page_schemas),
+                has_more=has_more,
+                max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=offset,
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters=parameters,
+                result_count=len(page_schemas),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_tables(
+        self,
+        *,
+        schema_name: str | None = None,
+        cursor: str | None = None,
+        page_size: int = 25,
+    ) -> ListTablesResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        page_size = self._validate_page_size(page_size)
+        if schema_name is not None:
+            schema_name = validate_schema_name(schema_name)
+        parameters = {"schema_name": schema_name, "page_size": page_size}
+        bound_hash = query_hash(parameters)
+        page = 1
+        if cursor:
+            offset, page_size = decode_cursor(cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+        else:
+            offset = 0
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_list_tables(schema_name=schema_name, fetch_count=fetch_count),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        tables = [self._table_from_row(row) for row in rows if row.get("table_name")]
+        end = min(offset + page_size, self.settings.max_results, len(tables))
+        page_tables = tables[offset:end]
+        has_more = len(tables) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
+        return ListTablesResponse(
+            tables=page_tables,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                returned=len(page_tables),
+                has_more=has_more,
+                max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=offset,
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={key: value for key, value in parameters.items() if value is not None},
+                result_count=len(page_tables),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def describe_table(self, schema_name: str, table_name: str) -> DescribeTableResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        schema_name = validate_schema_name(schema_name)
+        table_name = validate_table_name(table_name)
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_describe_table(schema_name, table_name, fetch_count=fetch_count),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        if not rows:
+            raise CasdaError(
+                "TABLE_NOT_FOUND",
+                "No TAP_SCHEMA columns were found for the requested table.",
+                details={"schema_name": schema_name, "table_name": table_name},
+            )
+        columns = [self._column_from_row(row) for row in rows if row.get("column_name")]
+        return DescribeTableResponse(
+            schema_name=schema_name,
+            table_name=table_name,
+            columns=columns,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"schema_name": schema_name, "table_name": table_name},
+                result_count=len(columns),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_foreign_keys(self, schema_name: str, table_name: str) -> ListForeignKeysResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        schema_name = validate_schema_name(schema_name)
+        table_name = validate_table_name(table_name)
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_list_foreign_keys(schema_name, table_name, fetch_count=fetch_count),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        foreign_keys = [self._foreign_key_from_row(row) for row in rows if row.get("key_id")]
+        return ListForeignKeysResponse(
+            schema_name=schema_name,
+            table_name=table_name,
+            foreign_keys=foreign_keys,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"schema_name": schema_name, "table_name": table_name},
+                result_count=len(foreign_keys),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    def _validate_page_size(self, page_size: int) -> int:
+        if page_size < 1:
+            raise ValidationError("page_size must be a positive integer.")
+        if page_size > self.settings.max_results:
+            raise ValidationError(
+                "page_size exceeds the configured result window.",
+                details={"page_size": page_size, "maximum": self.settings.max_results},
+            )
+        return page_size
+
+    @staticmethod
+    def _table_from_row(row: dict[str, str | None]) -> TableInfo:
+        schema_name = (row.get("schema_name") or "").strip()
+        raw_table = (row.get("table_name") or "").strip()
+        if not schema_name or not raw_table:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned incomplete TAP_SCHEMA table metadata.",
+            )
+        prefix = f"{schema_name}."
+        table_name = raw_table[len(prefix) :] if raw_table.startswith(prefix) else raw_table
+        return TableInfo(
+            schema_name=schema_name,
+            table_name=table_name,
+            table_type=row.get("table_type"),
+            description=row.get("description"),
+        )
+
+    @staticmethod
+    def _column_from_row(row: dict[str, str | None]) -> ColumnInfo:
+        column_name = row.get("column_name")
+        if not column_name:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned a TAP_SCHEMA column without a name.",
+            )
+        size_text = row.get("size")
+        try:
+            size = int(size_text) if size_text is not None else None
+        except ValueError as exc:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned an invalid TAP_SCHEMA column size.",
+            ) from exc
+        return ColumnInfo(
+            column_name=column_name,
+            datatype=row.get("datatype"),
+            ucd=row.get("ucd"),
+            unit=row.get("unit"),
+            utype=row.get("utype"),
+            description=row.get("description"),
+            size=size,
+            principal=CasdaService._tap_bool(row.get("principal")),
+            indexed=CasdaService._tap_bool(row.get("indexed")),
+            std=CasdaService._tap_bool(row.get("std")),
+        )
+
+    @staticmethod
+    def _foreign_key_from_row(row: dict[str, str | None]) -> ForeignKeyInfo:
+        key_id = row.get("key_id")
+        from_table = row.get("from_table")
+        target_table = row.get("target_table")
+        from_column = row.get("from_column")
+        target_column = row.get("target_column")
+        if not key_id or not from_table or not target_table or not from_column or not target_column:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned incomplete TAP_SCHEMA foreign-key metadata.",
+            )
+        from_schema, from_name = CasdaService._split_qualified_name(from_table)
+        target_schema, target_name = CasdaService._split_qualified_name(target_table)
+        return ForeignKeyInfo(
+            key_id=key_id,
+            from_schema=from_schema,
+            from_table=from_name,
+            target_schema=target_schema,
+            target_table=target_name,
+            from_column=from_column,
+            target_column=target_column,
+            description=row.get("description"),
+        )
+
+    @staticmethod
+    def _split_qualified_name(value: str) -> tuple[str, str]:
+        if "." not in value:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned an unqualified TAP_SCHEMA table name.",
+                details={"table_name": value},
+            )
+        schema_name, table_name = value.split(".", 1)
+        if not schema_name or not table_name:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned an invalid qualified TAP_SCHEMA table name.",
+                details={"table_name": value},
+            )
+        return schema_name, table_name
+
+    @staticmethod
+    def _tap_bool(value: str | None) -> bool | None:
+        if value is None:
+            return None
+        lowered = value.strip().lower()
+        if lowered in {"1", "true"}:
+            return True
+        if lowered in {"0", "false"}:
+            return False
+        return None
 
     async def search_products(self, criteria: SearchCriteria) -> SearchProductsResponse:
         requested_at = utc_now()

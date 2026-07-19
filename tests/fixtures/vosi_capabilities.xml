@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vosi:capabilities
+  xmlns:vosi="http://www.ivoa.net/xml/VOSICapabilities/v1.0"
+  xmlns:tap="http://www.ivoa.net/xml/TAPRegExt/v1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:vs="http://www.ivoa.net/xml/VODataService/v1.1"
+  xmlns:vr="http://www.ivoa.net/xml/VOResource/v1.0">
+  <capability standardID="ivo://ivoa.net/std/VOSI#capabilities">
+    <interface xsi:type="vs:ParamHTTP" version="1.0" role="std">
+      <accessURL use="full">https://casda.csiro.au/casda_vo_tools/tap/capabilities</accessURL>
+      <queryType>GET</queryType>
+      <resultType>application/xml</resultType>
+    </interface>
+  </capability>
+  <capability standardID="ivo://ivoa.net/std/VOSI#availability">
+    <interface xsi:type="vs:ParamHTTP" version="1.0" role="std">
+      <accessURL use="full">https://casda.csiro.au/casda_vo_tools/tap/availability</accessURL>
+    </interface>
+  </capability>
+  <capability standardID="ivo://ivoa.net/std/TAP" xsi:type="tap:TableAccess">
+    <interface xsi:type="vs:ParamHTTP" version="1.0" role="std">
+      <accessURL use="base">https://casda.csiro.au/casda_vo_tools/tap</accessURL>
+    </interface>
+  </capability>
+  <capability standardID="ivo://ivoa.net/std/DALI#examples">
+    <interface xsi:type="vr:WebBrowser" role="std">
+      <accessURL use="full">https://casda.csiro.au/casda_vo_tools/tap/examples</accessURL>
+    </interface>
+  </capability>
+</vosi:capabilities>

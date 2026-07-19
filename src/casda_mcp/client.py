@@ -18,6 +18,7 @@ import httpx
 
 from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError, map_http_error
+from casda_mcp.models import ArchiveAvailability, Capability
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import (
     DatalinkAccess,
@@ -27,6 +28,7 @@ from casda_mcp.parsers import (
     parse_uws_status,
 )
 from casda_mcp.provenance import sanitize_url
+from casda_mcp.vosi import parse_vosi_availability, parse_vosi_capabilities
 
 LOGGER = logging.getLogger(__name__)
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -96,6 +98,26 @@ class CasdaClient:
         )
         self.metrics.increment("search_result_count", len(response.content.splitlines()) - 1)
         return parse_tap_csv(response.content)
+
+    async def get_availability(self, *, correlation_id: str) -> ArchiveAvailability:
+        response = await self.request(
+            "GET",
+            f"{self.settings.tap_base_url}/availability",
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_vosi_availability(response.content)
+
+    async def get_capabilities(self, *, correlation_id: str) -> list[Capability]:
+        response = await self.request(
+            "GET",
+            f"{self.settings.tap_base_url}/capabilities",
+            headers={"Accept": UWS_ACCEPT},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_vosi_capabilities(response.content)
 
     async def verify_authentication(self, *, correlation_id: str) -> None:
         if not self.settings.has_credentials:

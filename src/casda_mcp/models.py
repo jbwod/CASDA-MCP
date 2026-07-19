@@ -248,3 +248,94 @@ class CreateManifestResponse(BaseModel):
     manifest: Manifest | None = None
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
+
+
+class ArchiveAvailability(BaseModel):
+    available: bool
+    notes: list[str] = Field(default_factory=list)
+    up_since: str | None = None
+
+
+class Capability(BaseModel):
+    standard_id: str
+    interface_url: str | None = None
+    interface_type: str | None = None
+    interface_version: str | None = None
+
+
+class SchemaInfo(BaseModel):
+    schema_name: str
+    description: str | None = None
+
+
+class TableInfo(BaseModel):
+    schema_name: str
+    table_name: str
+    table_type: str | None = None
+    description: str | None = None
+
+
+class ColumnInfo(BaseModel):
+    column_name: str
+    datatype: str | None = None
+    ucd: str | None = None
+    unit: str | None = None
+    utype: str | None = None
+    description: str | None = None
+    size: int | None = None
+    principal: bool | None = None
+    indexed: bool | None = None
+    std: bool | None = None
+
+
+class ForeignKeyInfo(BaseModel):
+    key_id: str
+    from_schema: str
+    from_table: str
+    target_schema: str
+    target_table: str
+    from_column: str
+    target_column: str
+    description: str | None = None
+
+
+class GetArchiveStatusResponse(BaseModel):
+    availability: ArchiveAvailability | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListCapabilitiesResponse(BaseModel):
+    capabilities: list[Capability] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListSchemasResponse(BaseModel):
+    schemas: list[SchemaInfo] = Field(default_factory=list)
+    pagination: Pagination | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListTablesResponse(BaseModel):
+    tables: list[TableInfo] = Field(default_factory=list)
+    pagination: Pagination | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class DescribeTableResponse(BaseModel):
+    schema_name: str | None = None
+    table_name: str | None = None
+    columns: list[ColumnInfo] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListForeignKeysResponse(BaseModel):
+    schema_name: str | None = None
+    table_name: str | None = None
+    foreign_keys: list[ForeignKeyInfo] = Field(default_factory=list)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
