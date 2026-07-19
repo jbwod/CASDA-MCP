@@ -97,6 +97,32 @@ class Project(BaseModel):
     principal_investigator: str | None = None
 
 
+class CollectionSummary(BaseModel):
+    """Aggregated ObsCore collection metadata."""
+
+    obs_collection: str
+    product_count: int = 0
+    product_types: list[str] = Field(default_factory=list)
+    facility_names: list[str] = Field(default_factory=list)
+    release_date_min: datetime | None = None
+    release_date_max: datetime | None = None
+
+
+class ObservationEvent(BaseModel):
+    """One observation lifecycle event from the public CASDA events feed."""
+
+    event_id: str
+    ivorn: str | None = None
+    timestamp: datetime | None = None
+    description: str | None = None
+    event_type: str | None = None
+    telescope: str | None = None
+    scheduling_block_id: int | None = None
+    project_code: str | None = None
+    project_name: str | None = None
+    parameters: dict[str, str] = Field(default_factory=dict)
+
+
 class Pagination(BaseModel):
     page: int
     page_size: int
@@ -515,5 +541,37 @@ class SearchSpectraResponse(BaseModel):
     spectra: list[SpectrumRow] = Field(default_factory=list)
     max_records: int
     returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class SearchProjectsResponse(BaseModel):
+    projects: list[Project] = Field(default_factory=list)
+    pagination: Pagination | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class GetProjectResponse(BaseModel):
+    project: Project | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class GetCollectionResponse(BaseModel):
+    collection: CollectionSummary | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ListEventsResponse(BaseModel):
+    events: list[ObservationEvent] = Field(default_factory=list)
+    pagination: Pagination | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class GetEventResponse(BaseModel):
+    event: ObservationEvent | None = None
     provenance: Provenance | None = None
     error: ErrorInfo | None = None

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<list
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:voe="http://www.ivoa.net/xml/VOEvent/v2.0"
+    xsi:schemaLocation="http://www.ivoa.net/xml/VOEvent/v2.0
+    http://www.ivoa.net/xml/VOEvent/VOEvent-v2.0.xsd">
+  <voe:VOEvent ivorn="ivo://casda.csiro.au/VOEvent#74659" role="utility" version="2.0">
+    <who>
+      <AuthorIVORN>ivo://casda.csiro.au/organization</AuthorIVORN>
+      <Date>2026-07-18T10:56:41.754458Z</Date>
+    </who>
+    <what>
+      <Description>Observation 86654 for project AS201 deposited</Description>
+      <param name="telescope" value="ASKAP"/>
+      <param name="scheduling_block_id" value="86654" dataType="int"/>
+      <param name="project_code" value="AS201"/>
+      <param name="project_name" value="EMU"/>
+      <param name="event" value="DEPOSITED"/>
+    </what>
+  </voe:VOEvent>
+  <voe:VOEvent ivorn="ivo://casda.csiro.au/VOEvent#74658" role="utility" version="2.0">
+    <who>
+      <AuthorIVORN>ivo://casda.csiro.au/organization</AuthorIVORN>
+      <Date>2026-07-18T10:56:41.678908Z</Date>
+    </who>
+    <what>
+      <Description>Observation 86654 for project AS203 deposited</Description>
+      <param name="telescope" value="ASKAP"/>
+      <param name="scheduling_block_id" value="86654" dataType="int"/>
+      <param name="project_code" value="AS203"/>
+      <param name="project_name" value="POSSUM"/>
+      <param name="event" value="DEPOSITED"/>
+    </what>
+  </voe:VOEvent>
+  <voe:VOEvent ivorn="ivo://casda.csiro.au/VOEvent#74657" role="utility" version="2.0">
+    <who>
+      <AuthorIVORN>ivo://casda.csiro.au/organization</AuthorIVORN>
+      <Date>2026-07-17T17:08:21.262817Z</Date>
+    </who>
+    <what>
+      <Description>Observation 86639 for project AS201 validated</Description>
+      <param name="telescope" value="ASKAP"/>
+      <param name="scheduling_block_id" value="86639" dataType="int"/>
+      <param name="project_code" value="AS201"/>
+      <param name="project_name" value="EMU"/>
+      <param name="event" value="VALIDATED"/>
+    </what>
+  </voe:VOEvent>
+</list>

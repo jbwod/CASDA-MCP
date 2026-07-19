@@ -26,10 +26,13 @@ from casda_mcp.models import (
     DescribeTableResponse,
     DownloadProductResponse,
     GetArchiveStatusResponse,
+    GetCollectionResponse,
     GetObservationResponse,
     GetProductResponse,
+    GetProjectResponse,
     ListCapabilitiesResponse,
     ListCataloguesResponse,
+    ListEventsResponse,
     ListForeignKeysResponse,
     ListImageSurveysResponse,
     ListSchemasResponse,
@@ -37,6 +40,7 @@ from casda_mcp.models import (
     SearchCatalogueResponse,
     SearchImagesResponse,
     SearchProductsResponse,
+    SearchProjectsResponse,
     SearchSpectraResponse,
     StageProductsResponse,
     StagingStatusResponse,
@@ -838,6 +842,93 @@ def create_mcp_server(
         except Exception as exc:
             _raise_internal_error(exc)
 
+    @mcp.tool(title="Search CASDA projects", annotations=_READ_ONLY)
+    async def casda_search_projects(
+        project_code: Annotated[
+            str | None, Field(description="Exact OPAL/CASDA project code, such as AS102.")
+        ] = None,
+        short_name: Annotated[
+            str | None,
+            Field(description="Exact project short name / ObsCore collection label."),
+        ] = None,
+        page_size: Annotated[
+            int, Field(description="Page size for bounded project listing.", ge=1, le=1000)
+        ] = 25,
+        cursor: Annotated[
+            str | None, Field(description="Opaque cursor from a previous projects page.")
+        ] = None,
+    ) -> SearchProjectsResponse:
+        """Search casda.project with optional exact filters and cursor pagination."""
+        try:
+            return await service.search_projects(
+                project_code=project_code,
+                short_name=short_name,
+                cursor=cursor,
+                page_size=page_size,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA project", annotations=_READ_ONLY)
+    async def casda_get_project(
+        project_code: Annotated[
+            str, Field(description="Exact OPAL/CASDA project code, such as AS102.")
+        ],
+    ) -> GetProjectResponse:
+        """Retrieve one project row from casda.project by OPAL code."""
+        try:
+            return await service.get_project(project_code)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Get CASDA collection", annotations=_READ_ONLY)
+    async def casda_get_collection(
+        collection: Annotated[
+            str,
+            Field(description="Exact ObsCore obs_collection / project short name."),
+        ],
+    ) -> GetCollectionResponse:
+        """Aggregate ObsCore products for one collection (counts, types, release span)."""
+        try:
+            return await service.get_collection(collection)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="List CASDA observation events", annotations=_READ_ONLY)
+    async def casda_list_events(
+        page_size: Annotated[
+            int, Field(description="Page size for the public events feed.", ge=1, le=1000)
+        ] = 25,
+        cursor: Annotated[
+            str | None, Field(description="Opaque cursor from a previous events page.")
+        ] = None,
+        project_code: Annotated[
+            str | None, Field(description="Optional exact project code filter.")
+        ] = None,
+        event_type: Annotated[
+            str | None,
+            Field(description="Optional event type filter such as DEPOSITED or VALIDATED."),
+        ] = None,
+    ) -> ListEventsResponse:
+        """List public observation lifecycle events with bounded cursor pagination."""
+        try:
+            return await service.list_events(
+                cursor=cursor,
+                page_size=page_size,
+                project_code=project_code,
+                event_type=event_type,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
     @mcp.tool(title="Stage CASDA products", annotations=_STATE_CHANGING)
     async def casda_stage_products(
         product_ids: Annotated[
@@ -1228,6 +1319,14 @@ def create_mcp_server(
         """One uncached JSON status read for a staging request known to this server."""
         try:
             return (await service.get_staging_status(request_id)).model_dump_json(exclude_none=True)
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
+
+    @mcp.resource("casda://events/{event_id}", mime_type="application/json")
+    async def event_resource(event_id: str) -> str:
+        """Read-only JSON for one observation event from the public events feed."""
+        try:
+            return (await service.get_event(event_id)).model_dump_json(exclude_none=True)
         except CasdaError as exc:
             return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
 

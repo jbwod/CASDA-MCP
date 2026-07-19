@@ -384,6 +384,74 @@ class QueryBuilder:
             "FROM casda.catalogue ORDER BY id ASC"
         )
 
+    def build_search_projects(
+        self,
+        *,
+        project_code: str | None,
+        short_name: str | None,
+        fetch_count: int,
+    ) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        clauses: list[str] = []
+        if project_code is not None:
+            code = project_code.strip().upper()
+            if not PROJECT_CODE_RE.fullmatch(code):
+                raise ValidationError("project_code is not a valid CASDA/OPAL project code.")
+            clauses.append(f"opal_code = '{code}'")
+        if short_name is not None:
+            clauses.append(f"short_name = {adql_string(short_name, field='short_name')}")
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        return (
+            f"SELECT TOP {fetch_count} id, opal_code, short_name, principal_first_name, "
+            f"principal_last_name FROM casda.project{where} ORDER BY opal_code ASC"
+        )
+
+    @staticmethod
+    def build_get_project(project_code: str) -> str:
+        code = project_code.strip().upper()
+        if not PROJECT_CODE_RE.fullmatch(code):
+            raise ValidationError("project_code is not a valid CASDA/OPAL project code.")
+        return (
+            "SELECT TOP 2 id, opal_code, short_name, principal_first_name, "
+            f"principal_last_name FROM casda.project WHERE opal_code = '{code}'"
+        )
+
+    @staticmethod
+    def build_collection_summary(collection: str) -> str:
+        collection_literal = adql_string(collection, field="collection")
+        return (
+            "SELECT TOP 1 obs_collection, COUNT(*) AS product_count, "
+            "MIN(obs_release_date) AS release_date_min, "
+            "MAX(obs_release_date) AS release_date_max "
+            f"FROM ivoa.obscore WHERE obs_collection = {collection_literal} "
+            "GROUP BY obs_collection"
+        )
+
+    @staticmethod
+    def build_collection_product_types(collection: str, *, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        collection_literal = adql_string(collection, field="collection")
+        return (
+            f"SELECT TOP {fetch_count} dataproduct_type, COUNT(*) AS product_count "
+            f"FROM ivoa.obscore WHERE obs_collection = {collection_literal} "
+            "AND dataproduct_type IS NOT NULL "
+            "GROUP BY dataproduct_type ORDER BY dataproduct_type ASC"
+        )
+
+    @staticmethod
+    def build_collection_facilities(collection: str, *, fetch_count: int) -> str:
+        if fetch_count < 1:
+            raise ValidationError("fetch_count must be a positive integer.")
+        collection_literal = adql_string(collection, field="collection")
+        return (
+            f"SELECT TOP {fetch_count} facility_name "
+            f"FROM ivoa.obscore WHERE obs_collection = {collection_literal} "
+            "AND facility_name IS NOT NULL "
+            "GROUP BY facility_name ORDER BY facility_name ASC"
+        )
+
     def _validate_search(self, criteria: SearchCriteria) -> None:
         spatial = (criteria.ra_deg, criteria.dec_deg, criteria.radius_deg)
         if any(value is not None for value in spatial) and not all(

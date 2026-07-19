@@ -12,6 +12,10 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda_search_products",
         "casda_get_product",
         "casda_get_observation",
+        "casda_search_projects",
+        "casda_get_project",
+        "casda_get_collection",
+        "casda_list_events",
         "casda_get_archive_status",
         "casda_list_capabilities",
         "casda_list_schemas",
@@ -47,6 +51,7 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda://products/{product_id}",
         "casda://observations/{scheduling_block_id}",
         "casda://staging/{request_id}",
+        "casda://events/{event_id}",
         "casda://manifests/{manifest_id}",
         "casda://skills/{skill_name}",
     }

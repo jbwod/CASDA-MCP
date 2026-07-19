@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -16,11 +17,19 @@ from astropy.io.votable import parse as parse_votable
 from defusedxml import ElementTree
 
 from casda_mcp.errors import CasdaError
-from casda_mcp.models import Observation, Product, Project, StagingState, UwsResult
+from casda_mcp.models import (
+    Observation,
+    ObservationEvent,
+    Product,
+    Project,
+    StagingState,
+    UwsResult,
+)
 
 UWS_NS = "{http://www.ivoa.net/xml/UWS/v1.0}"
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 SBID_RE = re.compile(r"^ASKAP-(\d+)$")
+EVENT_IVORN_RE = re.compile(r"#([^#]+)$")
 
 
 def parse_tap_csv(content: bytes) -> list[dict[str, str | None]]:
@@ -263,6 +272,150 @@ def project_from_row(row: dict[str, str | None]) -> Project:
         short_name=row.get("short_name"),
         principal_investigator=principal,
     )
+
+
+def _event_id_from_ivorn(ivorn: str) -> str:
+    match = EVENT_IVORN_RE.search(ivorn.strip())
+    if match:
+        return match.group(1)
+    return ivorn.strip()
+
+
+def _observation_event_from_mapping(raw: dict[str, Any]) -> ObservationEvent:
+    parameters: dict[str, str] = {}
+    for key, value in raw.items():
+        if key in {
+            "event_id",
+            "id",
+            "ivorn",
+            "timestamp",
+            "date",
+            "description",
+            "event_type",
+            "event",
+            "telescope",
+            "scheduling_block_id",
+            "project_code",
+            "project_name",
+            "parameters",
+        }:
+            continue
+        if value is None:
+            continue
+        parameters[str(key)] = str(value)
+    nested = raw.get("parameters")
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            if value is not None:
+                parameters[str(key)] = str(value)
+    ivorn = raw.get("ivorn")
+    event_id = raw.get("event_id") or raw.get("id")
+    if event_id is None and isinstance(ivorn, str) and ivorn:
+        event_id = _event_id_from_ivorn(ivorn)
+    if event_id is None:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an observation event without an identifier.",
+        )
+    timestamp = _datetime(
+        raw.get("timestamp") if isinstance(raw.get("timestamp"), str) else None
+    ) or _datetime(raw.get("date") if isinstance(raw.get("date"), str) else None)
+    sbid_raw = raw.get("scheduling_block_id")
+    try:
+        scheduling_block_id = int(sbid_raw) if sbid_raw is not None and sbid_raw != "" else None
+    except (TypeError, ValueError) as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an invalid scheduling_block_id in an observation event.",
+        ) from exc
+    event_type = raw.get("event_type") or raw.get("event")
+    return ObservationEvent(
+        event_id=str(event_id),
+        ivorn=str(ivorn) if ivorn else None,
+        timestamp=timestamp,
+        description=str(raw["description"]) if raw.get("description") is not None else None,
+        event_type=str(event_type) if event_type is not None else None,
+        telescope=str(raw["telescope"]) if raw.get("telescope") is not None else None,
+        scheduling_block_id=scheduling_block_id,
+        project_code=str(raw["project_code"]) if raw.get("project_code") is not None else None,
+        project_name=str(raw["project_name"]) if raw.get("project_name") is not None else None,
+        parameters=parameters,
+    )
+
+
+def parse_observation_events(content: bytes) -> list[ObservationEvent]:
+    """Parse the public CASDA observation-events feed (VOEvent XML list or JSON array)."""
+
+    stripped = content.lstrip()
+    if not stripped:
+        raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA returned an empty events feed.")
+    if stripped[:1] in {b"[", b"{"}:
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned invalid events JSON."
+            ) from exc
+        if isinstance(payload, dict):
+            for key in ("events", "items", "results"):
+                if isinstance(payload.get(key), list):
+                    payload = payload[key]
+                    break
+            else:
+                payload = [payload]
+        if not isinstance(payload, list):
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned an unexpected events JSON document.",
+            )
+        events: list[ObservationEvent] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise CasdaError(
+                    "MALFORMED_ARCHIVE_RESPONSE",
+                    "CASDA returned a non-object event entry.",
+                )
+            events.append(_observation_event_from_mapping(item))
+        return events
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError as exc:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned invalid events XML."
+        ) from exc
+    events = []
+    nodes = [root] if _local_name(root.tag) == "VOEvent" else list(root)
+    for node in nodes:
+        if _local_name(node.tag) != "VOEvent":
+            continue
+        ivorn = (node.attrib.get("ivorn") or "").strip() or None
+        timestamp = None
+        description = None
+        parameters: dict[str, str] = {}
+        for child in node.iter():
+            local = _local_name(child.tag)
+            if local == "Date" and timestamp is None and child.text:
+                timestamp = _datetime(child.text.strip())
+            elif local == "Description" and description is None and child.text:
+                description = child.text.strip() or None
+            elif local == "Param" or local == "param":
+                name = (child.attrib.get("name") or "").strip()
+                value = (child.attrib.get("value") or "").strip()
+                if name and value:
+                    parameters[name] = value
+        mapping: dict[str, Any] = {
+            "ivorn": ivorn,
+            "timestamp": timestamp.isoformat() if timestamp else None,
+            "description": description,
+            **parameters,
+        }
+        events.append(_observation_event_from_mapping(mapping))
+    if not events and _local_name(root.tag) not in {"list", "events", "VOEvent"}:
+        raise CasdaError(
+            "MALFORMED_ARCHIVE_RESPONSE",
+            "CASDA returned an unexpected events document.",
+        )
+    return events
 
 
 @dataclass(slots=True)

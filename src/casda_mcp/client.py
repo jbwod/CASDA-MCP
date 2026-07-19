@@ -18,12 +18,13 @@ import httpx
 
 from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError, map_http_error
-from casda_mcp.models import ArchiveAvailability, Capability
+from casda_mcp.models import ArchiveAvailability, Capability, ObservationEvent
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import (
     DatalinkAccess,
     UwsStatus,
     parse_datalink_access,
+    parse_observation_events,
     parse_sia1_surveys,
     parse_tap_csv,
     parse_uws_status,
@@ -189,6 +190,18 @@ class CasdaClient:
             correlation_id=correlation_id,
         )
         return parse_votable_rows(response.content)
+
+    async def get_events(self, *, correlation_id: str) -> list[ObservationEvent]:
+        """Fetch the public observation-events feed (no credentials)."""
+
+        response = await self.request(
+            "GET",
+            self.settings.events_url,
+            headers={"Accept": "application/xml, application/json;q=0.9, */*;q=0.1"},
+            safe_to_retry=True,
+            correlation_id=correlation_id,
+        )
+        return parse_observation_events(response.content)
 
     async def verify_authentication(self, *, correlation_id: str) -> None:
         if not self.settings.has_credentials:

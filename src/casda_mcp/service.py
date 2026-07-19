@@ -22,6 +22,7 @@ from casda_mcp.models import (
     AbortTapJobResponse,
     BuildAdqlResponse,
     CatalogueRow,
+    CollectionSummary,
     ColumnInfo,
     CreateManifestResponse,
     DeleteTapJobResponse,
@@ -29,11 +30,15 @@ from casda_mcp.models import (
     DownloadProductResponse,
     ForeignKeyInfo,
     GetArchiveStatusResponse,
+    GetCollectionResponse,
+    GetEventResponse,
     GetObservationResponse,
     GetProductResponse,
+    GetProjectResponse,
     ImageRow,
     ListCapabilitiesResponse,
     ListCataloguesResponse,
+    ListEventsResponse,
     ListForeignKeysResponse,
     ListImageSurveysResponse,
     ListSchemasResponse,
@@ -47,6 +52,7 @@ from casda_mcp.models import (
     SearchCatalogueResponse,
     SearchImagesResponse,
     SearchProductsResponse,
+    SearchProjectsResponse,
     SearchSpectraResponse,
     SpectrumRow,
     StageProductsResponse,
@@ -67,8 +73,10 @@ from casda_mcp.observability import Metrics
 from casda_mcp.parsers import observation_from_row, product_from_row, project_from_row
 from casda_mcp.provenance import canonical_hash, make_provenance, utc_now
 from casda_mcp.query import (
+    PROJECT_CODE_RE,
     QueryBuilder,
     SearchCriteria,
+    adql_string,
     normalize_product_id,
     normalize_product_ids,
     validate_catalogue_short_name,
@@ -1231,6 +1239,277 @@ class CasdaService:
             ),
             provenance=provenance,
         )
+
+    async def search_projects(
+        self,
+        *,
+        project_code: str | None = None,
+        short_name: str | None = None,
+        cursor: str | None = None,
+        page_size: int = 25,
+    ) -> SearchProjectsResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        page_size = self._validate_page_size(page_size)
+        if short_name is not None:
+            adql_string(short_name, field="short_name")
+        parameters = {
+            "project_code": project_code,
+            "short_name": short_name,
+            "page_size": page_size,
+        }
+        bound_hash = query_hash(parameters)
+        page = 1
+        if cursor:
+            offset, page_size = decode_cursor(cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+        else:
+            offset = 0
+        fetch_count = self.settings.max_results + 1
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_search_projects(
+                project_code=project_code,
+                short_name=short_name,
+                fetch_count=fetch_count,
+            ),
+            max_records=fetch_count,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        projects = [project_from_row(row) for row in rows]
+        end = min(offset + page_size, self.settings.max_results, len(projects))
+        page_projects = projects[offset:end]
+        has_more = len(projects) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
+        return SearchProjectsResponse(
+            projects=page_projects,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                returned=len(page_projects),
+                has_more=has_more,
+                max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=offset,
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters=parameters,
+                result_count=len(page_projects),
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_project(self, project_code: str) -> GetProjectResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        rows, cached = await self._cached_tap_query(
+            self.queries.build_get_project(project_code),
+            max_records=2,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        if not rows:
+            raise CasdaError(
+                "PROJECT_NOT_FOUND",
+                "No CASDA project matches the requested project code.",
+                details={"project_code": project_code.strip().upper()},
+            )
+        if len(rows) > 1:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned duplicate project identifiers.",
+            )
+        return GetProjectResponse(
+            project=project_from_row(rows[0]),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"project_code": project_code.strip().upper()},
+                result_count=1,
+                cached=cached,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_collection(self, collection: str) -> GetCollectionResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        adql_string(collection, field="collection")
+        summary_rows, type_rows, facility_rows = await asyncio.gather(
+            self.client.tap_query(
+                self.queries.build_collection_summary(collection),
+                max_records=2,
+                correlation_id=correlation_id,
+            ),
+            self.client.tap_query(
+                self.queries.build_collection_product_types(
+                    collection, fetch_count=self.settings.max_results
+                ),
+                max_records=self.settings.max_results,
+                correlation_id=correlation_id,
+            ),
+            self.client.tap_query(
+                self.queries.build_collection_facilities(
+                    collection, fetch_count=self.settings.max_results
+                ),
+                max_records=self.settings.max_results,
+                correlation_id=correlation_id,
+            ),
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        if not summary_rows:
+            raise CasdaError(
+                "COLLECTION_NOT_FOUND",
+                "No CASDA ObsCore products match the requested collection.",
+                details={"collection": collection.strip()},
+            )
+        if len(summary_rows) > 1:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned duplicate collection aggregates.",
+            )
+        summary = summary_rows[0]
+        obs_collection = summary.get("obs_collection") or collection.strip()
+        product_count = self._optional_int(summary, "product_count") or 0
+        product_types = sorted(
+            value for row in type_rows if (value := row.get("dataproduct_type")) is not None
+        )
+        facility_names = sorted(
+            value for row in facility_rows if (value := row.get("facility_name")) is not None
+        )
+        return GetCollectionResponse(
+            collection=CollectionSummary(
+                obs_collection=obs_collection,
+                product_count=product_count,
+                product_types=product_types,
+                facility_names=facility_names,
+                release_date_min=self._optional_datetime(summary.get("release_date_min")),
+                release_date_max=self._optional_datetime(summary.get("release_date_max")),
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"collection": obs_collection},
+                result_count=1,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def list_events(
+        self,
+        *,
+        cursor: str | None = None,
+        page_size: int = 25,
+        project_code: str | None = None,
+        event_type: str | None = None,
+    ) -> ListEventsResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        page_size = self._validate_page_size(page_size)
+        if project_code is not None:
+            project_code = project_code.strip().upper()
+            if not PROJECT_CODE_RE.fullmatch(project_code):
+                raise ValidationError("project_code is not a valid CASDA/OPAL project code.")
+        if event_type is not None:
+            event_type = validate_vo_param(event_type, field="event_type").upper()
+        parameters = {
+            "page_size": page_size,
+            "project_code": project_code,
+            "event_type": event_type,
+        }
+        bound_hash = query_hash(parameters)
+        page = 1
+        if cursor:
+            offset, page_size = decode_cursor(cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+        else:
+            offset = 0
+        events = await self.client.get_events(correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="Observation events feed succeeded")
+        if project_code is not None:
+            events = [
+                event for event in events if (event.project_code or "").upper() == project_code
+            ]
+        if event_type is not None:
+            events = [event for event in events if (event.event_type or "").upper() == event_type]
+        end = min(offset + page_size, self.settings.max_results, len(events))
+        page_events = events[offset:end]
+        has_more = len(events) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
+        return ListEventsResponse(
+            events=page_events,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                returned=len(page_events),
+                has_more=has_more,
+                max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=offset,
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.events_url,
+                parameters=parameters,
+                result_count=len(page_events),
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def get_event(self, event_id: str) -> GetEventResponse:
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        event_id = validate_idempotency_key(event_id)
+        events = await self.client.get_events(correlation_id=correlation_id)
+        self.note_archive_availability(True, detail="Observation events feed succeeded")
+        matches = [event for event in events if event.event_id == event_id]
+        if not matches:
+            raise CasdaError(
+                "EVENT_NOT_FOUND",
+                "No observation event matches the requested identifier in the current feed.",
+                details={"event_id": event_id},
+            )
+        if len(matches) > 1:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned duplicate observation event identifiers.",
+            )
+        return GetEventResponse(
+            event=matches[0],
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.events_url,
+                parameters={"event_id": event_id},
+                result_count=1,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    @staticmethod
+    def _optional_datetime(value: str | None) -> datetime | None:
+        if value is None or value == "":
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise CasdaError(
+                "MALFORMED_ARCHIVE_RESPONSE",
+                "CASDA returned an invalid datetime value.",
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     async def get_product(self, product_id: str) -> GetProductResponse:
         requested_at = utc_now()
