@@ -1,0 +1,23 @@
+{
+  "data": {
+    "id": "10.25919/kqrt-pv24",
+    "type": "dois",
+    "attributes": {
+      "doi": "10.25919/kqrt-pv24",
+      "titles": [{"title": "Example CSIRO DAP Collection"}],
+      "creators": [
+        {"name": "Example, Author", "givenName": "Author", "familyName": "Example"}
+      ],
+      "publisher": "CSIRO",
+      "publicationYear": 2024,
+      "url": "https://data.csiro.au/collection/csiro:example",
+      "relatedIdentifiers": [
+        {
+          "relatedIdentifier": "https://research.csiro.au/casda/",
+          "relatedIdentifierType": "URL",
+          "relationType": "IsDescribedBy"
+        }
+      ]
+    }
+  }
+}

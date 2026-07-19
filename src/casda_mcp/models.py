@@ -667,6 +667,33 @@ class GetCollectionResponse(BaseModel):
     error: ErrorInfo | None = None
 
 
+class DoiRecord(BaseModel):
+    """Public citation metadata resolved from DataCite or doi.org (never minted here)."""
+
+    doi: str
+    prefix: str
+    is_csiro_dap: bool = False
+    title: str | None = None
+    creators: list[str] = Field(default_factory=list)
+    publisher: str | None = None
+    publication_year: int | None = None
+    url: str | None = None
+    related_identifiers: list[str] = Field(default_factory=list)
+    source: Literal["datacite", "doi_org_csl"] | None = None
+
+
+class ResolveCollectionDoiResponse(BaseModel):
+    found: bool = False
+    doi: str | None = None
+    record: DoiRecord | None = None
+    collection: str | None = None
+    project_code: str | None = None
+    navigation_url: str | None = None
+    message: str | None = None
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
 class ListEventsResponse(BaseModel):
     events: list[ObservationEvent] = Field(default_factory=list)
     pagination: Pagination | None = None

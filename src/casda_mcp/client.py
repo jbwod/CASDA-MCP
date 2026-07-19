@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 
@@ -94,6 +94,161 @@ class CasdaClient:
                 details={"url": sanitize_url(url)},
             )
         return url
+
+    def validate_citation_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in self.settings.citation_allowed_hosts
+            or parsed.username
+            or parsed.password
+        ):
+            raise CasdaError(
+                "UNSAFE_CITATION_URL",
+                "Citation resolve URL is outside the configured DataCite/doi.org allowlist.",
+                details={"url": sanitize_url(url)},
+            )
+        return url
+
+    async def fetch_datacite_doi(self, doi: str, *, correlation_id: str) -> dict[str, Any]:
+        """GET DataCite JSON for a DOI. Read-only; never uses OPAL credentials."""
+
+        url = f"{self.settings.datacite_api_url.rstrip('/')}/{quote(doi, safe='')}"
+        response = await self.request_citation(
+            "GET",
+            url,
+            headers={"Accept": "application/vnd.api+json"},
+            correlation_id=correlation_id,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CasdaError(
+                "MALFORMED_CITATION_RESPONSE",
+                "DataCite returned a non-JSON response.",
+                details={"doi": doi},
+            ) from exc
+        if not isinstance(payload, dict):
+            raise CasdaError(
+                "MALFORMED_CITATION_RESPONSE",
+                "DataCite returned an unexpected JSON payload.",
+                details={"doi": doi},
+            )
+        return payload
+
+    async def fetch_doi_csl(self, doi: str, *, correlation_id: str) -> dict[str, Any]:
+        """GET CSL-JSON from doi.org. Read-only; never uses OPAL credentials."""
+
+        url = f"{self.settings.doi_resolve_url.rstrip('/')}/{quote(doi, safe='')}"
+        response = await self.request_citation(
+            "GET",
+            url,
+            headers={"Accept": "application/vnd.citationstyles.csl+json"},
+            correlation_id=correlation_id,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CasdaError(
+                "MALFORMED_CITATION_RESPONSE",
+                "doi.org returned a non-JSON CSL response.",
+                details={"doi": doi},
+            ) from exc
+        if not isinstance(payload, dict):
+            raise CasdaError(
+                "MALFORMED_CITATION_RESPONSE",
+                "doi.org returned an unexpected CSL JSON payload.",
+                details={"doi": doi},
+            )
+        return payload
+
+    async def request_citation(
+        self,
+        method: str,
+        url: str,
+        *,
+        correlation_id: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Perform one unauthenticated GET against citation allowlisted hosts."""
+
+        self.validate_citation_url(url)
+        response_limit = self.settings.max_response_bytes
+        started = time.monotonic()
+        async with self._request_semaphore:
+            try:
+                response = await self._request_following_citation_redirects(
+                    method,
+                    url,
+                    max_response_bytes=response_limit,
+                    **kwargs,
+                )
+            except CasdaError:
+                self.metrics.increment("archive_error_count")
+                raise
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                self.metrics.increment("archive_error_count")
+                raise CasdaError(
+                    "CITATION_UNAVAILABLE",
+                    "The citation service could not be reached.",
+                    retryable=True,
+                    details={"endpoint": sanitize_url(url)},
+                ) from exc
+            latency_ms = round((time.monotonic() - started) * 1000, 2)
+            LOGGER.info(
+                "citation_request",
+                extra={
+                    "fields": {
+                        "correlation_id": correlation_id,
+                        "method": method,
+                        "endpoint": sanitize_url(url),
+                        "status_code": response.status_code,
+                        "latency_ms": latency_ms,
+                    }
+                },
+            )
+            self.metrics.increment("archive_request_count")
+            if response.status_code < 400:
+                return response
+            self.metrics.increment("archive_error_count")
+            if response.status_code == 404:
+                raise CasdaError(
+                    "DOI_NOT_FOUND",
+                    "No citation record was found for this DOI.",
+                    details={"endpoint": sanitize_url(url)},
+                    http_status=404,
+                )
+            raise map_http_error(response.status_code, "Citation resolve request failed.")
+
+    async def _request_following_citation_redirects(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_response_bytes: int,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        current_method = method
+        current_url = url
+        current_kwargs = dict(kwargs)
+        current_kwargs.pop("auth", None)
+        for _ in range(6):
+            request = self.http.build_request(current_method, current_url, **current_kwargs)
+            response = await self.http.send(request, auth=None, stream=True, follow_redirects=False)
+            if not response.is_redirect:
+                return await self._read_bounded_response(response, max_response_bytes)
+            location = response.headers.get("Location")
+            if not location:
+                return await self._read_bounded_response(response, max_response_bytes)
+            await response.aclose()
+            next_url = urljoin(current_url, location)
+            self.validate_citation_url(next_url)
+            if response.status_code in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
+                current_method = "GET"
+                current_kwargs.pop("data", None)
+                current_kwargs.pop("params", None)
+            current_url = next_url
+        raise CasdaError("CITATION_REDIRECT_ERROR", "Citation service returned too many redirects.")
 
     async def tap_query(
         self, query: str, *, max_records: int, correlation_id: str

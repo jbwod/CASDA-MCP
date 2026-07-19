@@ -36,6 +36,7 @@ from casda_mcp.models import (
     GetObservationResponse,
     GetProductResponse,
     GetProjectResponse,
+    ResolveCollectionDoiResponse,
     ListCapabilitiesResponse,
     ListCataloguesResponse,
     ListEventsResponse,
@@ -913,6 +914,51 @@ def create_mcp_server(
         """Aggregate ObsCore products for one collection (counts, types, release span)."""
         try:
             return await service.get_collection(collection)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Resolve collection DOI", annotations=_READ_ONLY)
+    async def casda_resolve_collection_doi(
+        doi: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "DOI such as 10.25919/kqrt-pv24 or https://doi.org/10.25919/kqrt-pv24. "
+                    "Provide exactly one of doi, collection, or project_code."
+                )
+            ),
+        ] = None,
+        collection: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "ObsCore collection name for best-effort lookup. Does not invent a DOI "
+                    "when archive metadata has none."
+                )
+            ),
+        ] = None,
+        project_code: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "OPAL project code for best-effort lookup. Does not invent a DOI when "
+                    "archive metadata has none."
+                )
+            ),
+        ] = None,
+    ) -> ResolveCollectionDoiResponse:
+        """Resolve public citation metadata via DataCite or doi.org CSL-JSON.
+
+        Read-only. Never mints DOIs or calls DataCite write APIs. CSIRO DAP DOIs typically
+        use prefix 10.25919 (labelled via is_csiro_dap). Requires CASDA_ENABLE_DOI_RESOLVE
+        (default true).
+        """
+        try:
+            return await service.resolve_collection_doi(
+                doi=doi, collection=collection, project_code=project_code
+            )
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:

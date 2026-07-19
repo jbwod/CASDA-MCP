@@ -39,9 +39,12 @@ class Settings(BaseSettings):
     enable_staging: bool = False
     enable_downloads: bool = False
     enable_advanced_adql: bool = False
+    enable_doi_resolve: bool = True
     download_dir: Path | None = None
     allow_overwrite: bool = False
     allow_unknown_stage_size: bool = False
+    datacite_api_url: str = "https://api.datacite.org/dois"
+    doi_resolve_url: str = "https://doi.org"
 
     max_results: int = Field(default=100, ge=1, le=1000)
     max_cone_radius_deg: float = Field(default=5.0, gt=0, le=90)
@@ -74,6 +77,8 @@ class Settings(BaseSettings):
         "scs_base_url",
         "ssa_url",
         "events_url",
+        "datacite_api_url",
+        "doi_resolve_url",
     )
     @classmethod
     def validate_archive_url(cls, value: str) -> str:
@@ -146,4 +151,14 @@ class Settings(BaseSettings):
         }
         # CASDA currently returns staged files from these archive-controlled hosts.
         configured.update({"ingest.pawsey.org", "ingest.pawsey.org.au"})
+        return frozenset(host for host in configured if host)
+
+    @property
+    def citation_allowed_hosts(self) -> frozenset[str]:
+        """Hosts permitted for public read-only DOI/citation resolve (not archive auth)."""
+
+        configured = {
+            urlparse(url).hostname for url in (self.datacite_api_url, self.doi_resolve_url)
+        }
+        configured.update({"api.datacite.org", "doi.org"})
         return frozenset(host for host in configured if host)

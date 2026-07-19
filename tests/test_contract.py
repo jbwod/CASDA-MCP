@@ -12,6 +12,7 @@ EXPECTED_TOOL_NAMES = frozenset(
         "casda_search_projects",
         "casda_get_project",
         "casda_get_collection",
+        "casda_resolve_collection_doi",
         "casda_list_events",
         "casda_get_archive_status",
         "casda_list_capabilities",

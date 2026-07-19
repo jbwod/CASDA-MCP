@@ -11,13 +11,14 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from casda_mcp.adql import validate_adql
 from casda_mcp.cache import TTLCache
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
 from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
+from casda_mcp.doi import doi_record_from_csl, doi_record_from_datacite, normalize_doi
 from casda_mcp.downloads import Downloader, parse_checksum, resolve_destination
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
@@ -63,6 +64,7 @@ from casda_mcp.models import (
     Pagination,
     Product,
     ReadyArtifact,
+    ResolveCollectionDoiResponse,
     SchemaInfo,
     SearchCatalogueResponse,
     SearchImagesResponse,
@@ -1439,6 +1441,130 @@ class CasdaService:
                 endpoint=self.settings.tap_url,
                 parameters={"collection": obs_collection},
                 result_count=1,
+                correlation_id=correlation_id,
+            ),
+        )
+
+    async def resolve_collection_doi(
+        self,
+        *,
+        doi: str | None = None,
+        collection: str | None = None,
+        project_code: str | None = None,
+    ) -> ResolveCollectionDoiResponse:
+        """Resolve public citation metadata via DataCite/doi.org (read-only; never mints)."""
+
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if not self.settings.enable_doi_resolve:
+            raise CasdaError(
+                "DOI_RESOLVE_DISABLED",
+                "Public DOI resolve is disabled by server configuration.",
+            )
+        provided = [
+            name
+            for name, value in (
+                ("doi", doi),
+                ("collection", collection),
+                ("project_code", project_code),
+            )
+            if value is not None and str(value).strip()
+        ]
+        if len(provided) != 1:
+            raise ValidationError(
+                "Provide exactly one of doi, collection, or project_code.",
+                details={"provided": provided},
+            )
+
+        if doi is not None and str(doi).strip():
+            normalized = normalize_doi(doi)
+            endpoint = f"{self.settings.datacite_api_url}/{normalized}"
+            datacite_error: CasdaError | None = None
+            try:
+                payload = await self.client.fetch_datacite_doi(
+                    normalized, correlation_id=correlation_id
+                )
+                record = doi_record_from_datacite(payload, doi=normalized)
+            except CasdaError as exc:
+                datacite_error = exc
+                try:
+                    csl = await self.client.fetch_doi_csl(
+                        normalized, correlation_id=correlation_id
+                    )
+                    record = doi_record_from_csl(csl, doi=normalized)
+                    endpoint = f"{self.settings.doi_resolve_url}/{normalized}"
+                except CasdaError as csl_exc:
+                    if datacite_error.code == "DOI_NOT_FOUND":
+                        raise datacite_error from csl_exc
+                    raise csl_exc from datacite_error
+            return ResolveCollectionDoiResponse(
+                found=True,
+                doi=record.doi,
+                record=record,
+                provenance=make_provenance(
+                    request_timestamp=requested_at,
+                    endpoint=endpoint,
+                    parameters={"doi": normalized, "source": record.source},
+                    result_count=1,
+                    correlation_id=correlation_id,
+                ),
+            )
+
+        # Collection / project_code: best-effort archive metadata only — never invent a DOI.
+        if collection is not None and str(collection).strip():
+            adql_string(collection, field="collection")
+            collection_name = collection.strip()
+            try:
+                await self.get_collection(collection_name)
+            except CasdaError as exc:
+                if exc.code != "COLLECTION_NOT_FOUND":
+                    raise
+            navigation = (
+                "https://data.csiro.au/search?"
+                f"q={quote(collection_name)}"
+            )
+            return ResolveCollectionDoiResponse(
+                found=False,
+                collection=collection_name,
+                navigation_url=navigation,
+                message=(
+                    "No DOI is present in CASDA ObsCore collection metadata for this "
+                    "collection. Use the DAP navigation URL to search collections; "
+                    "this server does not invent DOIs."
+                ),
+                provenance=make_provenance(
+                    request_timestamp=requested_at,
+                    endpoint=self.settings.tap_url,
+                    parameters={"collection": collection_name},
+                    result_count=0,
+                    correlation_id=correlation_id,
+                ),
+            )
+
+        assert project_code is not None
+        code = project_code.strip().upper()
+        if not PROJECT_CODE_RE.fullmatch(code):
+            raise ValidationError("project_code is not a valid CASDA/OPAL project code.")
+        try:
+            await self.get_project(code)
+        except CasdaError as exc:
+            if exc.code != "PROJECT_NOT_FOUND":
+                raise
+        navigation = f"https://data.csiro.au/search?q={quote(code)}"
+        return ResolveCollectionDoiResponse(
+            found=False,
+            project_code=code,
+            navigation_url=navigation,
+            message=(
+                "No DOI is present in CASDA project metadata for this project code. "
+                "Use the DAP navigation URL to search collections; this server does "
+                "not invent DOIs."
+            ),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"project_code": code},
+                result_count=0,
                 correlation_id=correlation_id,
             ),
         )
