@@ -54,9 +54,19 @@ class CasdaClient:
         self._auth: httpx.BasicAuth | None = None
         if settings.username is not None and settings.password is not None:
             self._auth = httpx.BasicAuth(settings.username, settings.password.get_secret_value())
+        # Include Pawsey ingest hosts so OPAL credentials can authenticate
+        # pawsey_async_service SODA jobs returned by DataLink.
         self._credential_origins = frozenset(
-            self._origin(url)
-            for url in (settings.login_url, settings.datalink_url, settings.soda_url)
+            {
+                *(
+                    self._origin(url)
+                    for url in (settings.login_url, settings.datalink_url, settings.soda_url)
+                ),
+                ("https", "ingest.pawsey.org", None),
+                ("https", "ingest.pawsey.org", 443),
+                ("https", "ingest.pawsey.org.au", None),
+                ("https", "ingest.pawsey.org.au", 443),
+            }
         )
         self._request_semaphore = asyncio.Semaphore(settings.max_concurrent_archive_requests)
         limits = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30)

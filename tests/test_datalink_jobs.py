@@ -94,9 +94,15 @@ async def test_get_auth_status_and_datalink_redacts_tokens(tmp_path) -> None:
             "spectrum_generation_service",
             "pawsey_async_service",
         }
+        assert "secret-pawsey-token" not in payload
         cutout = next(item for item in datalink.services if item.service_name == "cutout_service")
         assert cutout.authenticated_id_present is True
         assert cutout.size_bytes == 256
+        pawsey = next(
+            item for item in datalink.services if item.service_name == "pawsey_async_service"
+        )
+        assert pawsey.authenticated_id_present is True
+        assert pawsey.size_bytes == 2048
     finally:
         await service.aclose()
 
@@ -185,6 +191,79 @@ async def test_create_cutout_job_and_data_job_lifecycle(tmp_path) -> None:
         deleted = await service.delete_data_job("job-cut-1")
         assert deleted.deleted is True
         assert service.state.get_staging("job-cut-1") is None
+    finally:
+        await service.aclose()
+
+
+@respx.mock
+async def test_stage_pawsey_job_includes_human_gate_warnings(tmp_path) -> None:
+    respx.get("https://data.csiro.au/casda_vo_proxy/vo/tap/availability").mock(
+        return_value=httpx.Response(200, content=b"<ok/>")
+    )
+    respx.get("https://data.csiro.au/casda_vo_proxy/vo/datalink/links").mock(
+        return_value=httpx.Response(200, content=(FIXTURES / "datalink_cutout.xml").read_bytes())
+    )
+    create = respx.post("https://ingest.pawsey.org.au/casda_data_access/data/async").mock(
+        return_value=httpx.Response(
+            303,
+            headers={
+                "Location": "https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1"
+            },
+        )
+    )
+    respx.post(
+        "https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1/phase"
+    ).mock(return_value=httpx.Response(200, content=b"<ok/>"))
+    respx.get("https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1").mock(
+        return_value=httpx.Response(
+            200,
+            content=b"""<uws:job xmlns:uws='http://www.ivoa.net/xml/UWS/v1.0'>
+              <uws:phase>EXECUTING</uws:phase>
+            </uws:job>""",
+        )
+    )
+    respx.post("https://casda.csiro.au/casda_vo_tools/tap/sync").mock(
+        return_value=httpx.Response(
+            200,
+            content=(
+                b"obs_publisher_did,filename,access_estsize,access_url,obs_collection,"
+                b"facility_name,obs_release_date\n"
+                b"cube-1,cube-1.fits,100,"
+                b"https://data.csiro.au/casda_vo_proxy/vo/datalink/links?ID=cube-1,"
+                b"WALLABY,ASKAP,2020-01-01T00:00:00Z\n"
+            ),
+        )
+    )
+
+    settings = Settings(
+        _env_file=None,
+        username="researcher@example.test",
+        password="test-password",  # noqa: S106
+        enable_staging=True,
+        download_dir=tmp_path.resolve(),
+        max_retries=0,
+    )
+    service = CasdaService(settings)
+    try:
+        created = await service.stage_pawsey(
+            ["cube-1"],
+            idempotency_key="pawsey-run-1",
+            allow_duplicate=False,
+        )
+        assert created.request_id == "job-paw-1"
+        assert created.job_kind == "pawsey"
+        assert create.called
+        params = parse_qs(urlparse(str(create.calls[0].request.url)).query)
+        assert params["ID"] == ["secret-pawsey-token"]
+        assert any("Pawsey HPC account" in warning for warning in created.human_gate_warnings)
+        assert any("never auto-accepts" in warning for warning in created.human_gate_warnings)
+        assert any("Pawsey-network" in warning for warning in created.human_gate_warnings)
+        payload = created.model_dump_json()
+        assert "secret-pawsey-token" not in payload
+
+        status = await service.get_data_job("job-paw-1")
+        assert status.job_kind == "pawsey"
+        assert status.status == "EXECUTING"
     finally:
         await service.aclose()
 

@@ -108,6 +108,14 @@ from casda_mcp.state import StateStore
 
 ProgressCallback = Callable[[int, int | None], Awaitable[None]]
 
+PAWSEY_HUMAN_GATE_WARNINGS = (
+    "A Pawsey HPC account is required to access staged results on the Pawsey network.",
+    "Licence and account confirmation must be completed by a human in the CSIRO Data "
+    "Access Portal (DAP); this MCP server never auto-accepts terms.",
+    "Result access is Pawsey-network restricted; WEB download staging via "
+    "casda_stage_products is a separate path.",
+)
+
 
 class CasdaService:
     def __init__(
@@ -1684,6 +1692,45 @@ class CasdaService:
         idempotency_key: str | None,
         allow_duplicate: bool,
     ) -> StageProductsResponse:
+        return await self._stage_full_file_job(
+            product_ids,
+            idempotency_key=idempotency_key,
+            allow_duplicate=allow_duplicate,
+            service_name="async_service",
+            job_kind="full_file",
+        )
+
+    async def stage_pawsey(
+        self,
+        product_ids: list[str],
+        *,
+        idempotency_key: str | None,
+        allow_duplicate: bool,
+    ) -> StageProductsResponse:
+        """Stage products via DataLink pawsey_async_service (Pawsey network pull).
+
+        Distinct from WEB download staging (casda_stage_products). Requires the same
+        CASDA_ENABLE_STAGING flag and OPAL credentials. Licence/HPC confirmation remains
+        a human gate in DAP and is never auto-accepted by this server.
+        """
+
+        return await self._stage_full_file_job(
+            product_ids,
+            idempotency_key=idempotency_key,
+            allow_duplicate=allow_duplicate,
+            service_name="pawsey_async_service",
+            job_kind="pawsey",
+        )
+
+    async def _stage_full_file_job(
+        self,
+        product_ids: list[str],
+        *,
+        idempotency_key: str | None,
+        allow_duplicate: bool,
+        service_name: str,
+        job_kind: JobKind,
+    ) -> StageProductsResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
         if not self.settings.enable_staging:
@@ -1711,6 +1758,8 @@ class CasdaService:
                 allow_duplicate=allow_duplicate,
                 requested_at=requested_at,
                 correlation_id=correlation_id,
+                service_name=service_name,
+                job_kind=job_kind,
             )
 
     async def _stage_products_locked(
@@ -1721,19 +1770,24 @@ class CasdaService:
         allow_duplicate: bool,
         requested_at: datetime,
         correlation_id: str,
+        service_name: str = "async_service",
+        job_kind: JobKind = "full_file",
     ) -> StageProductsResponse:
         """Create at most one archive job while holding the process submission lock."""
 
         existing = self.state.get_staging_by_idempotency(key)
         if existing:
-            if set(existing.product_ids) != set(normalized):
+            if (
+                set(existing.product_ids) != set(normalized)
+                or existing.job_kind != job_kind
+            ):
                 raise CasdaError(
                     "IDEMPOTENCY_CONFLICT",
                     "The idempotency key was already used with different product identifiers.",
                 )
             self._reconcile_completed_staging(existing)
             return self._stage_response(existing, requested_at=requested_at, reused=True)
-        active = self.state.find_active_staging(normalized, job_kind="full_file")
+        active = self.state.find_active_staging(normalized, job_kind=job_kind)
         if active and not allow_duplicate:
             return self._stage_response(active, requested_at=requested_at, reused=True)
 
@@ -1768,7 +1822,7 @@ class CasdaService:
                 self.client.resolve_datalink(
                     product.access_url or "",
                     correlation_id=correlation_id,
-                    service_name="async_service",
+                    service_name=service_name,
                 )
                 for product in products
             )
@@ -1802,7 +1856,7 @@ class CasdaService:
                 )
                 for product in products
             ],
-            job_kind="full_file",
+            job_kind=job_kind,
         )
         # Store the confirmed archive job before requesting the RUN transition. If the
         # transition response is lost, callers can reconcile the known job instead of
@@ -2458,6 +2512,9 @@ class CasdaService:
             products=request.products,
             reused=reused,
             job_kind=request.job_kind,
+            human_gate_warnings=(
+                list(PAWSEY_HUMAN_GATE_WARNINGS) if request.job_kind == "pawsey" else []
+            ),
             provenance=make_provenance(
                 request_timestamp=requested_at,
                 endpoint=request.job_url,

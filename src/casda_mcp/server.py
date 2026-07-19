@@ -1212,6 +1212,51 @@ def create_mcp_server(
         except Exception as exc:
             _raise_internal_error(exc)
 
+    @mcp.tool(title="Stage CASDA products to Pawsey", annotations=_STATE_CHANGING)
+    async def casda_stage_pawsey(
+        product_ids: Annotated[
+            list[str],
+            Field(
+                description=(
+                    "Explicit CASDA product identifiers for Pawsey network staging. "
+                    "Empty input is rejected; duplicates are removed."
+                ),
+                min_length=1,
+                max_length=500,
+            ),
+        ],
+        idempotency_key: Annotated[
+            str | None,
+            Field(description="Caller-supplied idempotency key; a UUID is generated when omitted."),
+        ] = None,
+        allow_duplicate: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Allow a new request for the same active product set when a new "
+                    "idempotency key is used."
+                )
+            ),
+        ] = False,
+    ) -> StageProductsResponse:
+        """Submit one Pawsey pull staging job via DataLink pawsey_async_service.
+
+        Requires authentication and CASDA_ENABLE_STAGING (same flag as WEB full-file staging).
+        Distinct from casda_stage_products: results are Pawsey-network restricted. Response
+        includes human_gate_warnings; licence/HPC confirmation must be completed by a human
+        in DAP — this server never auto-accepts terms. Reuse data-job status/download tools.
+        """
+        try:
+            return await service.stage_pawsey(
+                product_ids,
+                idempotency_key=idempotency_key,
+                allow_duplicate=allow_duplicate,
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
     @mcp.tool(title="Get CASDA staging status", annotations=_READ_ONLY)
     async def casda_get_staging_status(
         request_id: Annotated[

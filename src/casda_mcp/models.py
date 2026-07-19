@@ -136,7 +136,7 @@ class Pagination(BaseModel):
 StagingState = Literal[
     "PENDING", "QUEUED", "EXECUTING", "SUSPENDED", "COMPLETED", "ERROR", "ABORTED", "UNKNOWN"
 ]
-JobKind = Literal["full_file", "cutout", "spectrum"]
+JobKind = Literal["full_file", "cutout", "spectrum", "pawsey"]
 
 
 class StagingItem(BaseModel):
@@ -271,6 +271,7 @@ class StageProductsResponse(BaseModel):
     products: list[StagingItem] = Field(default_factory=list)
     reused: bool = False
     job_kind: JobKind = "full_file"
+    human_gate_warnings: list[str] = Field(default_factory=list)
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
 

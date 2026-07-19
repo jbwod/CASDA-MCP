@@ -45,6 +45,7 @@ EXPECTED_TOOL_NAMES = frozenset(
         "casda_download_job_results",
         "casda_verify_file",
         "casda_stage_products",
+        "casda_stage_pawsey",
         "casda_get_staging_status",
         "casda_download_product",
         "casda_create_manifest",
