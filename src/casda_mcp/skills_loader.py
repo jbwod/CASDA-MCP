@@ -5,12 +5,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from importlib import resources
+from importlib.resources.abc import Traversable
 
 from casda_mcp.errors import CasdaError
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_NAME_RE = re.compile(r"^name:\s*(.+)$", re.MULTILINE)
-_DESCRIPTION_RE = re.compile(r"^description:\s*>-\s*\n((?:[ \t]+.+\n)+)|^description:\s*(.+)$", re.MULTILINE)
+_NAME_RE = re.compile(r"^name:\s*(\S+)\s*$", re.MULTILINE)
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,19 +23,28 @@ class SkillInfo:
     markdown: str
 
 
-def _skills_root() -> resources.abc.Traversable:
+def _skills_root() -> Traversable:
     return resources.files("casda_mcp").joinpath("skills")
 
 
 def _parse_description(frontmatter: str) -> str:
-    match = _DESCRIPTION_RE.search(frontmatter)
-    if match is None:
-        return ""
-    folded = match.group(1)
-    if folded is not None:
-        lines = [line.strip() for line in folded.splitlines() if line.strip()]
-        return " ".join(lines)
-    return (match.group(2) or "").strip()
+    lines = frontmatter.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("description:"):
+            remainder = line[len("description:") :].strip()
+            if remainder in {">-", "|-", ">", "|"}:
+                collected: list[str] = []
+                for body in lines[index + 1 :]:
+                    if body and not body[0].isspace():
+                        break
+                    stripped = body.strip()
+                    if stripped:
+                        collected.append(stripped)
+                return " ".join(collected)
+            if remainder:
+                return remainder.strip("\"'")
+            return ""
+    return ""
 
 
 def _parse_skill(markdown: str, *, directory_name: str) -> SkillInfo:
@@ -82,7 +92,9 @@ def list_skills() -> list[SkillInfo]:
         skill_file = entry.joinpath("SKILL.md")
         if not skill_file.is_file():
             continue
-        skills.append(_parse_skill(skill_file.read_text(encoding="utf-8"), directory_name=entry.name))
+        skills.append(
+            _parse_skill(skill_file.read_text(encoding="utf-8"), directory_name=entry.name)
+        )
     if not skills:
         raise CasdaError("SKILL_NOT_FOUND", "No packaged CASDA skills were found.")
     return skills
@@ -90,8 +102,11 @@ def list_skills() -> list[SkillInfo]:
 
 def get_skill(skill_name: str) -> SkillInfo:
     """Return one packaged skill by directory/name."""
-    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", skill_name):
-        raise CasdaError("VALIDATION_ERROR", "Skill name must be a lowercase hyphenated identifier.")
+    if not _SKILL_NAME_RE.fullmatch(skill_name):
+        raise CasdaError(
+            "VALIDATION_ERROR",
+            "Skill name must be a lowercase hyphenated identifier.",
+        )
     skill_file = _skills_root().joinpath(skill_name, "SKILL.md")
     if not skill_file.is_file():
         raise CasdaError("SKILL_NOT_FOUND", f"Skill '{skill_name}' is not known.")
