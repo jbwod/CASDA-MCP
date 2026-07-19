@@ -28,6 +28,21 @@ async def test_initial_tool_names_and_required_product_schema(settings) -> None:
         "casda://observations/{scheduling_block_id}",
         "casda://staging/{request_id}",
         "casda://manifests/{manifest_id}",
+        "casda://skills/{skill_name}",
+    }
+    static_resources = await server.list_resources()
+    assert {str(resource.uri) for resource in static_resources} >= {
+        "casda://server/status",
+        "casda://skills",
+    }
+    prompts = await server.list_prompts()
+    assert {prompt.name for prompt in prompts} == {
+        "find-and-inspect-products",
+        "stage-and-download",
+        "build-reproducible-selection",
+        "query-catalogue",
+        "make-cutout",
+        "monitor-releases",
     }
     service = server.casda_service  # type: ignore[attr-defined]
     await service.aclose()

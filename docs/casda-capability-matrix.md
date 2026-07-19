@@ -45,8 +45,9 @@ capability to which it maps.
 | `casda_get_staging_status` | **Partial** | One status read for a job previously created by this server |
 | `casda_download_product` | **Partial** | One recorded ready artifact under a restricted local root |
 | `casda_create_manifest` | **Partial** | Deterministic product manifest without full collection/DOI citation metadata |
-| Product, observation, staging, manifest, and server-status resources | **Partial** | Five resource templates; archive discovery resources are not yet exposed |
-| MCP prompts | **Planned** | No prompt templates are currently registered |
+| Product, observation, staging, manifest, skill, and server-status resources | **Partial** | Skill index plus templates for products, observations, staging, manifests, and skills; archive discovery resources are not yet exposed |
+| MCP prompts | **Implemented** | Six workflow prompts, including explicit unsupported cutout guidance |
+| Agent skills | **Implemented** | Four packaged `SKILL.md` files exposed as `casda://skills` resources and mirrored under `.cursor/skills/` |
 
 ## Confirmed CASDA endpoints
 
@@ -253,8 +254,9 @@ Full CASDA coverage also requires a complete and safe MCP contract:
 | --- | --- |
 | Tool failures | Protocol-level MCP errors and `isError: true`, not only a successful response envelope containing an `error` field |
 | Tool metadata | Titles plus correct `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` annotations |
-| Resources | Archive services, schemas, tables, catalogues, products, observations, projects, jobs, and manifests |
-| Prompts | `find-and-inspect-products`, `query-catalogue`, `make-cutout`, `stage-and-download`, `monitor-releases`, and `build-reproducible-selection` |
+| Resources | Products, observations, staging, manifests, server status, and packaged skill index/markdown; archive service/schema discovery still planned |
+| Prompts | `find-and-inspect-products`, `query-catalogue`, `make-cutout` (explicit unsupported), `stage-and-download`, `monitor-releases`, and `build-reproducible-selection` |
+| Agent skills | Packaged `SKILL.md` guidance via `casda://skills` and `.cursor/skills/` (not first-class MCP `skills/*` protocol methods) |
 | Pagination | Stable opaque cursors for large tables, catalogues, and event feeds |
 | Long-running operations | MCP progress notifications and cancellation propagation |
 | Load safety | Global and per-operation rate/concurrency limits; bounded decoded responses |

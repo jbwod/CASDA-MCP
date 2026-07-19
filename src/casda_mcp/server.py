@@ -28,6 +28,7 @@ from casda_mcp.models import (
 )
 from casda_mcp.query import SearchCriteria
 from casda_mcp.service import CasdaService
+from casda_mcp.skills_loader import get_skill, skills_index
 
 LOGGER = logging.getLogger(__name__)
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
@@ -73,8 +74,9 @@ def create_mcp_server(
         instructions=(
             "Structured, auditable access to the CSIRO ASKAP Science Data Archive. "
             "Search and inspect before selecting explicit product identifiers. "
-            "Staging and downloads "
-            "are separate guarded operations and are disabled by default."
+            "Staging and downloads are separate guarded operations and are disabled by default. "
+            "Use registered prompts for guided workflows and read casda://skills for "
+            "procedural agent guidance. Do not invent ADQL, cutouts, or DAP automation."
         ),
         host=host,
         port=port,
@@ -361,6 +363,207 @@ def create_mcp_server(
             return _error(CreateManifestResponse, exc)
         except Exception as exc:
             return _internal_error(CreateManifestResponse, exc)
+
+    @mcp.prompt(
+        name="find-and-inspect-products",
+        title="Find and inspect CASDA products",
+        description=(
+            "Search bounded ObsCore metadata, present candidates, then inspect selected "
+            "products or ASKAP observations. Does not stage or download."
+        ),
+    )
+    def find_and_inspect_products(
+        ra_deg: float | None = None,
+        dec_deg: float | None = None,
+        radius_deg: float | None = None,
+        project_code: str | None = None,
+        product_types: str | None = None,
+    ) -> str:
+        criteria: list[str] = []
+        if ra_deg is not None:
+            criteria.append(f"ra_deg={ra_deg}")
+        if dec_deg is not None:
+            criteria.append(f"dec_deg={dec_deg}")
+        if radius_deg is not None:
+            criteria.append(f"radius_deg={radius_deg}")
+        if project_code:
+            criteria.append(f'project_code="{project_code}"')
+        if product_types:
+            criteria.append(f"product_types hint: {product_types}")
+        criteria_text = ", ".join(criteria) if criteria else "criteria supplied by the user in chat"
+        return (
+            "Use the CASDA MCP safely for discovery only.\n\n"
+            f"1. Call casda_search_products with explicit bounded filters ({criteria_text}). "
+            "Coordinates are ICRS degrees; frequencies are hertz; dates are ISO 8601. "
+            "Do not resolve source names inside this server.\n"
+            "2. Present stable product_id values, file sizes, release state, and access fields.\n"
+            "3. For selected identifiers call casda_get_product. For a known ASKAP SBID call "
+            "casda_get_observation.\n"
+            "4. Do not stage or download unless the user explicitly asks next.\n"
+            "5. Read casda://skills/casda-find-and-inspect if procedural detail is needed."
+        )
+
+    @mcp.prompt(
+        name="stage-and-download",
+        title="Stage and download CASDA products",
+        description=(
+            "Stage explicit products, check status once per wait, then download ready files "
+            "under the configured download directory."
+        ),
+    )
+    def stage_and_download(
+        product_ids: str,
+        destination: str | None = None,
+    ) -> str:
+        destination_text = (
+            f' Use destination hint "{destination}" only if it stays under CASDA_DOWNLOAD_DIR.'
+            if destination
+            else ""
+        )
+        return (
+            "Use the CASDA MCP for authenticated full-file staging and guarded download.\n\n"
+            f"Selected product_ids (comma-separated or JSON list text): {product_ids}\n"
+            "1. Confirm OPAL credentials and that staging/downloads are enabled; "
+            "treat STAGING_DISABLED or DOWNLOADS_DISABLED as configuration issues.\n"
+            "2. Inspect sizes with casda_get_product for each ID.\n"
+            "3. Call casda_stage_products with those explicit IDs and a stable idempotency_key.\n"
+            "4. Later call casda_get_staging_status once for the returned request_id; "
+            "do not assume background polling.\n"
+            "5. Only after products are ready, call casda_download_product one product at a "
+            f"time with verify_checksum=true.{destination_text}\n"
+            "6. Cutouts and spectrum generation are not available—do not invent those calls.\n"
+            "7. Read casda://skills/casda-stage-and-download for safety details."
+        )
+
+    @mcp.prompt(
+        name="build-reproducible-selection",
+        title="Build a reproducible CASDA selection",
+        description=(
+            "Inspect explicit products and create a versioned manifest without persisting "
+            "artifact download URLs."
+        ),
+    )
+    def build_reproducible_selection(
+        product_ids: str,
+        source_name: str | None = None,
+        workflow_name: str | None = None,
+    ) -> str:
+        labels: list[str] = []
+        if source_name:
+            labels.append(f'source_name="{source_name}"')
+        if workflow_name:
+            labels.append(f'workflow_name="{workflow_name}"')
+        label_text = f" Include {', '.join(labels)}." if labels else ""
+        return (
+            "Record an explicit CASDA product selection for reproducibility.\n\n"
+            f"product_ids: {product_ids}\n"
+            "1. Confirm the IDs with the user after search/inspect.\n"
+            "2. Optionally call casda_get_product for each ID.\n"
+            f"3. Call casda_create_manifest with those IDs and include_download_urls=false."
+            f"{label_text}\n"
+            "4. Never persist archive artifact URLs; opaque paths may be short-lived credentials.\n"
+            "5. Re-read via casda://manifests/{{manifest_id}} when needed.\n"
+            "6. Read casda://skills/casda-reproducible-manifest for details."
+        )
+
+    @mcp.prompt(
+        name="query-catalogue",
+        title="Query CASDA catalogue products",
+        description=(
+            "Search ObsCore catalogue products with bounded filters. Dedicated SCS endpoints "
+            "are not exposed."
+        ),
+    )
+    def query_catalogue(
+        ra_deg: float | None = None,
+        dec_deg: float | None = None,
+        radius_deg: float | None = None,
+        project_code: str | None = None,
+    ) -> str:
+        criteria: list[str] = ['product_types=["catalogue"]']
+        if ra_deg is not None:
+            criteria.append(f"ra_deg={ra_deg}")
+        if dec_deg is not None:
+            criteria.append(f"dec_deg={dec_deg}")
+        if radius_deg is not None:
+            criteria.append(f"radius_deg={radius_deg}")
+        if project_code:
+            criteria.append(f'project_code="{project_code}"')
+        return (
+            "Search CASDA catalogue products only through the bounded ObsCore search tool.\n\n"
+            f"1. Call casda_search_products with {', '.join(criteria)}.\n"
+            "2. Present catalogue product_id values and inspect selected rows with "
+            "casda_get_product.\n"
+            "3. Do not call SCS, invent catalogue-specific endpoints, or write raw ADQL.\n"
+            "4. Dedicated Simple Cone Search catalogue endpoints remain planned, not exposed."
+        )
+
+    @mcp.prompt(
+        name="make-cutout",
+        title="Make a CASDA cutout (unsupported)",
+        description=(
+            "Explains that spatial/spectral cutouts are not exposed by this server and must "
+            "not be invented."
+        ),
+    )
+    def make_cutout() -> str:
+        return (
+            "CASDA cutouts are not available through this MCP server.\n\n"
+            "There is no cutout tool to call. Do not invent SODA cutout parameters, scrape the "
+            "Data Access Portal, or claim cutout staging succeeded.\n"
+            "Spatial/spectral cutouts and spectrum generation remain planned/authenticated "
+            "CASDA capabilities outside the current MCP surface.\n"
+            "Offer full-file search, inspect, stage, download, or manifest workflows instead, "
+            "or direct the user to supported CASDA VO/DAP cutout paths outside this server."
+        )
+
+    @mcp.prompt(
+        name="monitor-releases",
+        title="Monitor CASDA release state",
+        description=(
+            "Check product release fields via search and get_product. The observation-events "
+            "feed is not exposed yet."
+        ),
+    )
+    def monitor_releases(
+        project_code: str | None = None,
+        scheduling_block_id: int | None = None,
+        collection: str | None = None,
+    ) -> str:
+        criteria: list[str] = []
+        if project_code:
+            criteria.append(f'project_code="{project_code}"')
+        if scheduling_block_id is not None:
+            criteria.append(f"scheduling_block_id={scheduling_block_id}")
+        if collection:
+            criteria.append(f'collection="{collection}"')
+        criteria_text = ", ".join(criteria) if criteria else "filters supplied by the user"
+        return (
+            "Check CASDA release state using existing metadata tools only.\n\n"
+            f"1. Call casda_search_products with {criteria_text}. Consider released_only=false "
+            "when the user wants unreleased rows, and sort_by=release_date when useful.\n"
+            "2. Inspect selected products with casda_get_product and report release_date / "
+            "release-related fields honestly.\n"
+            "3. Do not claim continuous monitoring. The public observation-events feed is "
+            "planned and not exposed as an MCP tool or resource yet.\n"
+            "4. Do not scrape the DAP for release notices."
+        )
+
+    @mcp.resource("casda://skills", mime_type="application/json")
+    async def skills_index_resource() -> str:
+        """Read-only JSON index of packaged agent skills."""
+        try:
+            return json.dumps(skills_index(), separators=(",", ":"), sort_keys=True)
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
+
+    @mcp.resource("casda://skills/{skill_name}", mime_type="text/markdown")
+    async def skill_resource(skill_name: str) -> str:
+        """Read-only SKILL.md guidance for one packaged agent skill."""
+        try:
+            return get_skill(skill_name).markdown
+        except CasdaError as exc:
+            return json.dumps({"error": exc.as_dict()}, separators=(",", ":"))
 
     @mcp.resource("casda://products/{product_id}", mime_type="application/json")
     async def product_resource(product_id: str) -> str:

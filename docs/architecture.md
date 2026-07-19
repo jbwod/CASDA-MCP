@@ -4,7 +4,9 @@
 
 | Module | Responsibility |
 | --- | --- |
-| `server.py` | Stable MCP tool/resource names, descriptions, input/output schemas, transport app, health. |
+| `server.py` | Stable MCP tool/resource/prompt names, descriptions, input/output schemas, transport app, health. |
+| `skills_loader.py` | Packaged `SKILL.md` discovery via importlib resources; skill index and validation. |
+| `skills/*/SKILL.md` | Canonical agent skill markdown shipped in the wheel and mirrored to `.cursor/skills/`. |
 | `service.py` | Workflow orchestration, limits, idempotency, per-product state, provenance, manifests. |
 | `query.py` | Validation and allowlisted TAP/ADQL construction; no generic query entry point. |
 | `client.py` | Pooled async HTTP, bounded decoded reads, OPAL auth, redirects, retry/host handling. |

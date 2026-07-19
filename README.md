@@ -308,16 +308,43 @@ short-lived bearer credentials even when they contain no query string.
 
 ## Resources
 
-The server exposes read-only JSON resources:
+The server exposes read-only resources:
 
 - `casda://products/{product_id}`
 - `casda://observations/{scheduling_block_id}`
 - `casda://staging/{request_id}`
 - `casda://manifests/{manifest_id}`
 - `casda://server/status`
+- `casda://skills` (JSON index of packaged agent skills)
+- `casda://skills/{skill_name}` (raw `SKILL.md` markdown)
 
 Resources do not expose credentials, raw local state files, unrestricted filesystem content, or URL
 query strings. The staging resource performs one current status read, like the tool.
+
+## Prompts
+
+Registered MCP prompts guide safe workflows without inventing unsupported archive operations:
+
+| Prompt | Purpose |
+| --- | --- |
+| `find-and-inspect-products` | Bounded search, then inspect selected products or ASKAP observations |
+| `query-catalogue` | ObsCore search with `product_types=["catalogue"]` only |
+| `stage-and-download` | Stage explicit IDs, one-shot status checks, guarded download |
+| `build-reproducible-selection` | Create a manifest without persisting artifact URLs |
+| `monitor-releases` | Release fields via search/get_product; events feed not exposed |
+| `make-cutout` | Explicit unsupported notice; no cutout tool to call |
+
+## Agent skills
+
+Canonical skill files live under `src/casda_mcp/skills/` and ship in the package:
+
+- `casda-safe-archive-access`
+- `casda-find-and-inspect`
+- `casda-stage-and-download`
+- `casda-reproducible-manifest`
+
+The same files are mirrored under `.cursor/skills/` for Cursor project discovery. MCP clients can
+read them through `casda://skills` and `casda://skills/{skill_name}`.
 
 ## Example workflows
 

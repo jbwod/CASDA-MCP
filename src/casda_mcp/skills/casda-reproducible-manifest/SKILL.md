@@ -2,8 +2,8 @@
 name: casda-reproducible-manifest
 description: >-
   Record an explicit CASDA product selection as a versioned manifest for papers
-  and pipelines. Use after search/inspect when the user needs citable, machine-
-  readable provenance without persisting download URLs.
+  and pipelines. Use after search/inspect when the user needs citable,
+  machine-readable provenance without persisting download URLs.
 ---
 
 # CASDA reproducible manifest
