@@ -50,6 +50,7 @@ class CasdaClient:
             self._origin(url)
             for url in (settings.login_url, settings.datalink_url, settings.soda_url)
         )
+        self._request_semaphore = asyncio.Semaphore(settings.max_concurrent_archive_requests)
         limits = httpx.Limits(max_connections=20, max_keepalive_connections=10, keepalive_expiry=30)
         self.http = httpx.AsyncClient(
             headers=headers,
@@ -199,52 +200,53 @@ class CasdaClient:
             raise ValueError("max_response_bytes must be positive")
         attempts = self.settings.max_retries + 1 if safe_to_retry else 1
         last_error: Exception | None = None
-        for attempt in range(attempts):
-            started = time.monotonic()
-            try:
-                response = await self._request_following_safe_redirects(
-                    method,
-                    url,
-                    authenticated=authenticated,
-                    max_response_bytes=response_limit,
-                    **kwargs,
-                )
-                latency_ms = round((time.monotonic() - started) * 1000, 2)
-                LOGGER.info(
-                    "archive_request",
-                    extra={
-                        "fields": {
-                            "correlation_id": correlation_id,
-                            "method": method,
-                            "endpoint": sanitize_url(url),
-                            "status_code": response.status_code,
-                            "latency_ms": latency_ms,
-                            "attempt": attempt + 1,
-                        }
-                    },
-                )
-                self.metrics.increment("archive_request_count")
-                if response.status_code < 400:
-                    return response
-                if (
-                    safe_to_retry
-                    and response.status_code in RETRYABLE_STATUS
-                    and attempt + 1 < attempts
-                ):
+        async with self._request_semaphore:
+            for attempt in range(attempts):
+                started = time.monotonic()
+                try:
+                    response = await self._request_following_safe_redirects(
+                        method,
+                        url,
+                        authenticated=authenticated,
+                        max_response_bytes=response_limit,
+                        **kwargs,
+                    )
+                    latency_ms = round((time.monotonic() - started) * 1000, 2)
+                    LOGGER.info(
+                        "archive_request",
+                        extra={
+                            "fields": {
+                                "correlation_id": correlation_id,
+                                "method": method,
+                                "endpoint": sanitize_url(url),
+                                "status_code": response.status_code,
+                                "latency_ms": latency_ms,
+                                "attempt": attempt + 1,
+                            }
+                        },
+                    )
+                    self.metrics.increment("archive_request_count")
+                    if response.status_code < 400:
+                        return response
+                    if (
+                        safe_to_retry
+                        and response.status_code in RETRYABLE_STATUS
+                        and attempt + 1 < attempts
+                    ):
+                        self.metrics.increment("archive_retry_count")
+                        await asyncio.sleep(self._retry_delay(response, attempt))
+                        continue
+                    self.metrics.increment("archive_error_count")
+                    raise map_http_error(response.status_code)
+                except CasdaError:
+                    raise
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    last_error = exc
+                    self.metrics.increment("archive_error_count")
+                    if not safe_to_retry or attempt + 1 >= attempts:
+                        break
                     self.metrics.increment("archive_retry_count")
-                    await asyncio.sleep(self._retry_delay(response, attempt))
-                    continue
-                self.metrics.increment("archive_error_count")
-                raise map_http_error(response.status_code)
-            except CasdaError:
-                raise
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                last_error = exc
-                self.metrics.increment("archive_error_count")
-                if not safe_to_retry or attempt + 1 >= attempts:
-                    break
-                self.metrics.increment("archive_retry_count")
-                await asyncio.sleep(self._backoff(attempt))
+                    await asyncio.sleep(self._backoff(attempt))
         raise CasdaError(
             "ARCHIVE_UNAVAILABLE",
             "CASDA could not be reached within the configured retry limit.",

@@ -6,9 +6,11 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal, TypeVar, cast
+from typing import Annotated, Any, Literal, NoReturn, TypeVar, cast
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
@@ -19,7 +21,6 @@ from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
     CreateManifestResponse,
     DownloadProductResponse,
-    ErrorInfo,
     GetObservationResponse,
     GetProductResponse,
     SearchProductsResponse,
@@ -33,28 +34,51 @@ from casda_mcp.skills_loader import get_skill, skills_index
 LOGGER = logging.getLogger(__name__)
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 ProductType = Literal[
-    "image", "cube", "visibility", "spectrum", "catalogue", "weight", "moment_map"
+    "image",
+    "cube",
+    "visibility",
+    "spectrum",
+    "catalogue",
+    "weight",
+    "moment_map",
+    "cubelet",
+    "evaluation",
+    "scan",
 ]
 ProductSort = Literal[
     "product_id", "filename", "file_size", "observation_start", "release_date", "distance"
 ]
 
+_READ_ONLY = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
+_STATE_CHANGING = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+)
+_IDEMPOTENT_WRITE = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
 
-def _error(response_type: type[ResponseT], exc: CasdaError) -> ResponseT:
-    return response_type(error=ErrorInfo(**exc.as_dict()))
+
+def _raise_tool_error(exc: CasdaError) -> NoReturn:
+    raise ToolError(json.dumps(exc.as_dict(), separators=(",", ":"))) from exc
 
 
-def _internal_error(response_type: type[ResponseT], exc: Exception) -> ResponseT:
+def _raise_internal_error(exc: Exception) -> NoReturn:
     LOGGER.exception(
         "unhandled_tool_error", extra={"fields": {"exception_type": type(exc).__name__}}
     )
-    return response_type(
-        error=ErrorInfo(
-            code="INTERNAL_ERROR",
-            message="The CASDA MCP server could not complete the operation.",
-            retryable=False,
+    raise ToolError(
+        json.dumps(
+            {
+                "code": "INTERNAL_ERROR",
+                "message": "The CASDA MCP server could not complete the operation.",
+                "retryable": False,
+                "details": {},
+            },
+            separators=(",", ":"),
         )
-    )
+    ) from exc
 
 
 def create_mcp_server(
@@ -76,7 +100,8 @@ def create_mcp_server(
             "Search and inspect before selecting explicit product identifiers. "
             "Staging and downloads are separate guarded operations and are disabled by default. "
             "Use registered prompts for guided workflows and read casda://skills for "
-            "procedural agent guidance. Do not invent ADQL, cutouts, or DAP automation."
+            "procedural agent guidance. Prefer allowlisted discovery tools; advanced ADQL "
+            "requires CASDA_ENABLE_ADVANCED_ADQL. Do not scrape DAP administrative flows."
         ),
         host=host,
         port=port,
@@ -85,7 +110,10 @@ def create_mcp_server(
     )
     cast(Any, mcp).casda_service = service
 
-    @mcp.tool()
+    @mcp.tool(
+        title="Search CASDA products",
+        annotations=_READ_ONLY,
+    )
     async def casda_search_products(
         source_name: Annotated[
             str | None,
@@ -124,16 +152,28 @@ def create_mcp_server(
             Field(
                 description=(
                     "Allowlisted types: image, cube, visibility, spectrum, catalogue, "
-                    "weight, moment_map."
+                    "weight, moment_map, cubelet, evaluation, scan."
                 ),
-                max_length=7,
+                max_length=10,
             ),
         ] = None,
         collection: Annotated[
             str | None, Field(description="Exact ObsCore collection name.")
         ] = None,
+        facility_name: Annotated[
+            str | None, Field(description="Exact ObsCore facility_name filter.")
+        ] = None,
+        instrument_name: Annotated[
+            str | None, Field(description="Exact ObsCore instrument_name filter.")
+        ] = None,
         released_only: Annotated[
-            bool, Field(description="Exclude unreleased products when true.")
+            bool,
+            Field(
+                description=(
+                    "When true, require a non-null obs_release_date and exclude restricted "
+                    "access rows after the TAP fetch."
+                )
+            ),
         ] = True,
         sort_by: Annotated[
             ProductSort,
@@ -157,6 +197,10 @@ def create_mcp_server(
                 description="Number of results to return; bounded by server configuration.", ge=1
             ),
         ] = 25,
+        cursor: Annotated[
+            str | None,
+            Field(description="Opaque next-page cursor from a previous search response."),
+        ] = None,
     ) -> SearchProductsResponse:
         """Search product metadata with a safely generated, bounded TAP/ADQL query.
 
@@ -179,19 +223,22 @@ def create_mcp_server(
                     frequency_max_hz=frequency_max_hz,
                     product_types=list(product_types) if product_types is not None else None,
                     collection=collection,
+                    facility_name=facility_name,
+                    instrument_name=instrument_name,
                     released_only=released_only,
                     sort_by=sort_by,
                     sort_order=sort_order,
                     page=page,
                     page_size=page_size,
+                    cursor=cursor,
                 )
             )
         except CasdaError as exc:
-            return _error(SearchProductsResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(SearchProductsResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Get CASDA product", annotations=_READ_ONLY)
     async def casda_get_product(
         product_id: Annotated[
             str, Field(description="Exact CASDA obs_publisher_did product identifier.")
@@ -204,25 +251,31 @@ def create_mcp_server(
         try:
             return await service.get_product(product_id)
         except CasdaError as exc:
-            return _error(GetProductResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(GetProductResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Get CASDA observation", annotations=_READ_ONLY)
     async def casda_get_observation(
         scheduling_block_id: Annotated[
-            int, Field(description="Positive ASKAP scheduling block identifier.", gt=0)
-        ],
+            int | None, Field(description="Positive ASKAP scheduling block identifier.", gt=0)
+        ] = None,
+        observation_id: Annotated[
+            str | None,
+            Field(description="Exact ObsCore obs_id when not using the ASKAP SBID convenience."),
+        ] = None,
     ) -> GetObservationResponse:
-        """Retrieve an observation, projects, and bounded products for an ASKAP SBID."""
+        """Retrieve an observation, projects, and bounded products for an ASKAP SBID or obs_id."""
         try:
-            return await service.get_observation(scheduling_block_id)
+            return await service.get_observation(
+                scheduling_block_id=scheduling_block_id, observation_id=observation_id
+            )
         except CasdaError as exc:
-            return _error(GetObservationResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(GetObservationResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Stage CASDA products", annotations=_STATE_CHANGING)
     async def casda_stage_products(
         product_ids: Annotated[
             list[str],
@@ -262,11 +315,11 @@ def create_mcp_server(
                 allow_duplicate=allow_duplicate,
             )
         except CasdaError as exc:
-            return _error(StageProductsResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(StageProductsResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Get CASDA staging status", annotations=_READ_ONLY)
     async def casda_get_staging_status(
         request_id: Annotated[
             str, Field(description="Archive staging request identifier returned by this server.")
@@ -275,15 +328,16 @@ def create_mcp_server(
         """Perform one uncached status check for a known CASDA staging request.
 
         This tool does not continue polling after the call returns and does not download files.
+        Alias of casda_get_data_job for full-file staging jobs.
         """
         try:
             return await service.get_staging_status(request_id)
         except CasdaError as exc:
-            return _error(StagingStatusResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(StagingStatusResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Download CASDA product", annotations=_IDEMPOTENT_WRITE)
     async def casda_download_product(
         product_id: Annotated[
             str,
@@ -302,6 +356,7 @@ def create_mcp_server(
             bool,
             Field(description="Verify the archive checksum when a checksum sidecar is available."),
         ] = True,
+        ctx: Context[Any, Any, Any] | None = None,
     ) -> DownloadProductResponse:
         """Download one confirmed-ready product using guarded, streamed local filesystem writes.
 
@@ -310,17 +365,23 @@ def create_mcp_server(
         within the call when Range is supported, and removes incomplete files after failure.
         """
         try:
+
+            async def _progress(current: int, total: int | None) -> None:
+                if ctx is not None:
+                    await ctx.report_progress(current, total)
+
             return await service.download_product(
                 product_id,
                 destination=destination,
                 verify_checksum=verify_checksum,
+                progress_callback=_progress if ctx is not None else None,
             )
         except CasdaError as exc:
-            return _error(DownloadProductResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(DownloadProductResponse, exc)
+            _raise_internal_error(exc)
 
-    @mcp.tool()
+    @mcp.tool(title="Create CASDA manifest", annotations=_IDEMPOTENT_WRITE)
     async def casda_create_manifest(
         product_ids: Annotated[
             list[str],
@@ -360,9 +421,9 @@ def create_mcp_server(
                 include_download_urls=include_download_urls,
             )
         except CasdaError as exc:
-            return _error(CreateManifestResponse, exc)
+            _raise_tool_error(exc)
         except Exception as exc:
-            return _internal_error(CreateManifestResponse, exc)
+            _raise_internal_error(exc)
 
     @mcp.prompt(
         name="find-and-inspect-products",
@@ -619,7 +680,7 @@ def create_mcp_server(
 
 
 def create_http_app(server: FastMCP) -> Starlette:
-    """Create the Streamable HTTP app with a non-sensitive health endpoint."""
+    """Create the Streamable HTTP app with liveness and readiness endpoints."""
 
     service = cast(CasdaService, cast(Any, server).casda_service)
 
@@ -634,8 +695,21 @@ def create_http_app(server: FastMCP) -> Starlette:
             }
         )
 
+    async def readyz(_: object) -> JSONResponse:
+        readiness = service.readiness_snapshot()
+        archive_available = readiness.get("archive_available")
+        ready = archive_available is not False
+        payload = {
+            "status": "ready" if ready else "not_ready",
+            "server": "casda-mcp",
+            "version": __version__,
+            **readiness,
+        }
+        return JSONResponse(payload, status_code=200 if ready else 503)
+
     app = server.streamable_http_app()
     app.routes.insert(0, Route("/healthz", healthz, methods=["GET"]))
+    app.routes.insert(1, Route("/readyz", readyz, methods=["GET"]))
     return app
 
 

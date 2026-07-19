@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -12,6 +13,7 @@ from urllib.parse import unquote, urlparse
 from casda_mcp.cache import TTLCache
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
+from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
 from casda_mcp.downloads import Downloader
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
@@ -43,6 +45,8 @@ from casda_mcp.query import (
 )
 from casda_mcp.state import StateStore
 
+ProgressCallback = Callable[[int, int | None], Awaitable[None]]
+
 
 class CasdaService:
     def __init__(
@@ -67,18 +71,52 @@ class CasdaService:
         )
         self._staging_submission_lock = asyncio.Lock()
         self.downloader = Downloader(self.settings, self.client, self.metrics)
+        self._archive_available: bool | None = None
+        self._archive_status_checked_at: datetime | None = None
+        self._archive_status_detail: str | None = None
 
     async def aclose(self) -> None:
         await self.client.aclose()
         self.state.close()
 
+    def readiness_snapshot(self) -> dict[str, object]:
+        """Last-known archive availability for /readyz; never blocks on a live check."""
+
+        return {
+            "archive_available": self._archive_available,
+            "checked_at": (
+                self._archive_status_checked_at.isoformat().replace("+00:00", "Z")
+                if self._archive_status_checked_at
+                else None
+            ),
+            "detail": self._archive_status_detail,
+        }
+
+    def note_archive_availability(
+        self, available: bool, *, detail: str | None = None
+    ) -> None:
+        self._archive_available = available
+        self._archive_status_checked_at = utc_now()
+        self._archive_status_detail = detail
+
     async def search_products(self, criteria: SearchCriteria) -> SearchProductsResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
+        parameters = criteria.as_parameters()
+        bound_hash = query_hash(parameters)
+        page = criteria.page
+        page_size = criteria.page_size
+        if criteria.cursor:
+            offset, page_size = decode_cursor(criteria.cursor, expected_query_hash=bound_hash)
+            page = (offset // page_size) + 1 if page_size else 1
+            start = offset
+        else:
+            start = (page - 1) * page_size
         query, max_records = self.queries.build_search(criteria)
         rows, cached = await self._cached_tap_query(
             query, max_records=max_records, correlation_id=correlation_id
         )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
         all_products = [
             product_from_row(
                 row, ready=self.state.get_ready(row.get("obs_publisher_did") or "") is not None
@@ -91,10 +129,8 @@ class CasdaService:
                 for product in all_products
                 if product.release_date is not None and product.access_state != "RESTRICTED"
             ]
-        start = (criteria.page - 1) * criteria.page_size
-        end = min(start + criteria.page_size, self.settings.max_results)
+        end = min(start + page_size, self.settings.max_results)
         products = all_products[start:end]
-        parameters = criteria.as_parameters()
         for product in products:
             self.state.put_search(product.product_id, parameters)
         self.metrics.increment("search_request_count")
@@ -102,6 +138,12 @@ class CasdaService:
             self.metrics.increment("cache_hit_count")
         else:
             self.metrics.increment("cache_miss_count")
+        has_more = len(all_products) > end and end < self.settings.max_results
+        next_cursor = (
+            encode_cursor(query_hash=bound_hash, offset=end, page_size=page_size)
+            if has_more
+            else None
+        )
         provenance = make_provenance(
             request_timestamp=requested_at,
             endpoint=self.settings.tap_url,
@@ -113,11 +155,13 @@ class CasdaService:
         return SearchProductsResponse(
             products=products,
             pagination=Pagination(
-                page=criteria.page,
-                page_size=criteria.page_size,
+                page=page,
+                page_size=page_size,
                 returned=len(products),
-                has_more=len(all_products) > end and end < self.settings.max_results,
+                has_more=has_more,
                 max_results=self.settings.max_results,
+                next_cursor=next_cursor,
+                offset=start,
             ),
             provenance=provenance,
         )
@@ -152,34 +196,87 @@ class CasdaService:
             ),
         )
 
-    async def get_observation(self, scheduling_block_id: int) -> GetObservationResponse:
+    async def get_observation(
+        self,
+        scheduling_block_id: int | None = None,
+        *,
+        observation_id: str | None = None,
+    ) -> GetObservationResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
-        observation_query = self.queries.build_observation(scheduling_block_id)
-        projects_query = self.queries.build_observation_projects(scheduling_block_id)
-        product_criteria = SearchCriteria(
-            scheduling_block_id=scheduling_block_id,
-            page_size=self.settings.max_results,
-            released_only=False,
-        )
-        products_query, product_limit = self.queries.build_search(product_criteria)
-        observation_rows, project_rows, product_rows = await asyncio.gather(
-            self.client.tap_query(observation_query, max_records=2, correlation_id=correlation_id),
-            self.client.tap_query(projects_query, max_records=50, correlation_id=correlation_id),
-            self.client.tap_query(
-                products_query, max_records=product_limit, correlation_id=correlation_id
-            ),
-        )
-        if not observation_rows:
+        if (scheduling_block_id is None) == (observation_id is None):
+            raise CasdaError(
+                "VALIDATION_ERROR",
+                "Provide exactly one of scheduling_block_id or observation_id.",
+            )
+        resolved_obs_id: str
+        sbid: int | None = scheduling_block_id
+        if observation_id is not None:
+            from casda_mcp.query import adql_string
+
+            resolved_obs_id = observation_id.strip()
+            adql_string(resolved_obs_id, field="observation_id")
+            if resolved_obs_id.startswith("ASKAP-"):
+                try:
+                    sbid = int(resolved_obs_id.removeprefix("ASKAP-"))
+                except ValueError:
+                    sbid = None
+        else:
+            assert scheduling_block_id is not None
+            resolved_obs_id = f"ASKAP-{scheduling_block_id}"
+
+        products_query, product_limit = self.queries.build_observation_products(resolved_obs_id)
+        projects_query = self.queries.build_observation_projects(resolved_obs_id)
+        if sbid is not None and sbid > 0:
+            observation_rows, project_rows, product_rows = await asyncio.gather(
+                self.client.tap_query(
+                    self.queries.build_observation(sbid),
+                    max_records=2,
+                    correlation_id=correlation_id,
+                ),
+                self.client.tap_query(
+                    projects_query, max_records=50, correlation_id=correlation_id
+                ),
+                self.client.tap_query(
+                    products_query, max_records=product_limit, correlation_id=correlation_id
+                ),
+            )
+            if observation_rows:
+                if len(observation_rows) > 1:
+                    raise CasdaError(
+                        "MALFORMED_ARCHIVE_RESPONSE",
+                        "CASDA returned duplicate observation identifiers.",
+                    )
+                observation = observation_from_row(observation_rows[0]).model_copy(
+                    update={"obs_id": resolved_obs_id}
+                )
+            else:
+                observation = None
+        else:
+            observation_rows = []
+            project_rows, product_rows = await asyncio.gather(
+                self.client.tap_query(
+                    projects_query, max_records=50, correlation_id=correlation_id
+                ),
+                self.client.tap_query(
+                    products_query, max_records=product_limit, correlation_id=correlation_id
+                ),
+            )
+            observation = None
+
+        if not product_rows and observation is None:
             raise CasdaError(
                 "OBSERVATION_NOT_FOUND",
-                "No CASDA observation has the requested scheduling block identifier.",
-                details={"scheduling_block_id": scheduling_block_id},
+                "No CASDA observation matches the requested identifier.",
+                details={
+                    "scheduling_block_id": scheduling_block_id,
+                    "observation_id": resolved_obs_id,
+                },
             )
-        if len(observation_rows) > 1:
-            raise CasdaError(
-                "MALFORMED_ARCHIVE_RESPONSE", "CASDA returned duplicate observation identifiers."
-            )
+        if observation is None and product_rows:
+            seed = dict(product_rows[0])
+            seed["obs_id"] = resolved_obs_id
+            observation = observation_from_row(seed)
         products = [
             product_from_row(
                 row, ready=self.state.get_ready(row.get("obs_publisher_did") or "") is not None
@@ -187,13 +284,16 @@ class CasdaService:
             for row in product_rows[: self.settings.max_results]
         ]
         return GetObservationResponse(
-            observation=observation_from_row(observation_rows[0]),
+            observation=observation,
             projects=[project_from_row(row) for row in project_rows],
             products=products,
             provenance=make_provenance(
                 request_timestamp=requested_at,
                 endpoint=self.settings.tap_url,
-                parameters={"scheduling_block_id": scheduling_block_id},
+                parameters={
+                    "scheduling_block_id": scheduling_block_id,
+                    "observation_id": resolved_obs_id,
+                },
                 result_count=len(products),
                 correlation_id=correlation_id,
             ),
@@ -441,6 +541,7 @@ class CasdaService:
         *,
         destination: str | None,
         verify_checksum: bool,
+        progress_callback: ProgressCallback | None = None,
     ) -> DownloadProductResponse:
         requested_at = utc_now()
         correlation_id = str(uuid.uuid4())
@@ -464,6 +565,7 @@ class CasdaService:
             destination=destination,
             verify_checksum=verify_checksum,
             correlation_id=correlation_id,
+            progress_callback=progress_callback,
         )
         return DownloadProductResponse(
             result=result,

@@ -35,6 +35,12 @@ PRODUCT_TYPE_CLAUSES = {
         "OR o.dataproduct_subtype LIKE 'spectral.weight.%')"
     ),
     "moment_map": "o.dataproduct_subtype LIKE 'spectral.restored.mom%'",
+    "cubelet": "o.dataproduct_subtype LIKE '%cubelet%'",
+    "evaluation": (
+        "(o.obs_publisher_did LIKE 'evaluation-%' "
+        "OR o.dataproduct_subtype LIKE '%evaluation%')"
+    ),
+    "scan": "o.obs_publisher_did LIKE 'scan-%'",
 }
 
 PRODUCT_COLUMNS = """o.obs_publisher_did, o.filename, o.dataproduct_type,
@@ -109,14 +115,21 @@ class SearchCriteria:
     frequency_max_hz: float | None = None
     product_types: list[str] | None = None
     collection: str | None = None
+    facility_name: str | None = None
+    instrument_name: str | None = None
     released_only: bool = True
     sort_by: str = "product_id"
     sort_order: Literal["asc", "desc"] = "asc"
     page: int = 1
     page_size: int = 25
+    cursor: str | None = None
 
     def as_parameters(self) -> dict[str, Any]:
-        return {key: value for key, value in asdict(self).items() if value is not None}
+        return {
+            key: value
+            for key, value in asdict(self).items()
+            if value is not None and key != "cursor"
+        }
 
 
 class QueryBuilder:
@@ -146,6 +159,15 @@ class QueryBuilder:
         if criteria.collection:
             clauses.append(
                 f"o.obs_collection = {adql_string(criteria.collection, field='collection')}"
+            )
+        if criteria.facility_name:
+            clauses.append(
+                f"o.facility_name = {adql_string(criteria.facility_name, field='facility_name')}"
+            )
+        if criteria.instrument_name:
+            clauses.append(
+                "o.instrument_name = "
+                f"{adql_string(criteria.instrument_name, field='instrument_name')}"
             )
         if criteria.observation_start:
             observation_start = parse_datetime(
@@ -216,14 +238,23 @@ class QueryBuilder:
         return f"SELECT TOP 2 * FROM casda.observation WHERE sbid = {sbid}"
 
     @staticmethod
-    def build_observation_projects(sbid: int) -> str:
-        if sbid <= 0:
-            raise ValidationError("scheduling_block_id must be a positive integer.")
+    def build_observation_projects(obs_id: str) -> str:
+        obs_literal = adql_string(obs_id, field="observation_id")
         return (
             "SELECT DISTINCT p.id, p.opal_code, p.short_name, p.principal_first_name, "
             "p.principal_last_name FROM casda.project AS p JOIN ivoa.obscore AS o "
-            f"ON p.short_name = o.obs_collection WHERE o.obs_id = 'ASKAP-{sbid}'"
+            f"ON p.short_name = o.obs_collection WHERE o.obs_id = {obs_literal}"
         )
+
+    def build_observation_products(self, obs_id: str) -> tuple[str, int]:
+        obs_literal = adql_string(obs_id, field="observation_id")
+        fetch_count = self.max_results + 1
+        query = (
+            f"SELECT TOP {fetch_count} {PRODUCT_COLUMNS} FROM ivoa.obscore AS o "
+            "LEFT OUTER JOIN casda.project AS p ON o.obs_collection = p.short_name "
+            f"WHERE o.obs_id = {obs_literal} ORDER BY o.obs_publisher_did ASC"
+        )
+        return query, fetch_count
 
     def _validate_search(self, criteria: SearchCriteria) -> None:
         spatial = (criteria.ra_deg, criteria.dec_deg, criteria.radius_deg)

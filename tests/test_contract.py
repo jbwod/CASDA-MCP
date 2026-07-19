@@ -53,6 +53,7 @@ async def test_http_health_endpoint_is_non_sensitive() -> None:
     transport = httpx.ASGITransport(app=create_http_app(server))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/healthz")
+        ready = await client.get("/readyz")
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
@@ -61,5 +62,9 @@ async def test_http_health_endpoint_is_non_sensitive() -> None:
         "staging_enabled": False,
         "downloads_enabled": False,
     }
+    assert ready.status_code == 200
+    body = ready.json()
+    assert body["status"] == "ready"
+    assert body["archive_available"] is None
     service = server.casda_service  # type: ignore[attr-defined]
     await service.aclose()

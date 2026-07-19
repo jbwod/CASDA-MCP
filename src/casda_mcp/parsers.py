@@ -231,18 +231,22 @@ def product_from_row(row: dict[str, str | None], *, ready: bool = False) -> Prod
 def observation_from_row(row: dict[str, str | None]) -> Observation:
     observation_id = _int(row, "id")
     sbid = _int(row, "sbid")
-    if observation_id is None or sbid is None:
+    obs_id = row.get("obs_id")
+    if observation_id is None and sbid is None and not obs_id:
         raise CasdaError("MALFORMED_ARCHIVE_RESPONSE", "CASDA observation metadata is incomplete.")
     return Observation(
         id=observation_id,
         sbid=sbid,
-        observation_start=_datetime(row.get("obs_start")),
-        observation_end=_datetime(row.get("obs_end")),
-        observation_start_mjd=_float(row, "obs_start_mjd"),
-        observation_end_mjd=_float(row, "obs_end_mjd"),
-        telescope=row.get("telescope"),
+        obs_id=obs_id or (f"ASKAP-{sbid}" if sbid is not None else None),
+        observation_start=_datetime(row.get("obs_start") or row.get("t_min")),
+        observation_end=_datetime(row.get("obs_end") or row.get("t_max")),
+        observation_start_mjd=_float(row, "obs_start_mjd") or _float(row, "t_min"),
+        observation_end_mjd=_float(row, "obs_end_mjd") or _float(row, "t_max"),
+        telescope=row.get("telescope") or row.get("facility_name"),
         observation_program=row.get("obs_program"),
         deposit_state=row.get("deposit_state"),
+        facility_name=row.get("facility_name"),
+        instrument_name=row.get("instrument_name"),
     )
 
 

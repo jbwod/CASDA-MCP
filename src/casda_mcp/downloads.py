@@ -13,6 +13,7 @@ import stat
 import tempfile
 import time
 import unicodedata
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -27,6 +28,8 @@ from casda_mcp.config import Settings
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import ChecksumResult, DownloadResult, Product, ReadyArtifact
 from casda_mcp.observability import Metrics
+
+ProgressCallback = Callable[[int, int | None], Awaitable[None]]
 
 CHECKSUM_RE = re.compile(r"(?i)\b(md5|sha-?1|sha-?256)\s*[:=]\s*([0-9a-f]+)\b")
 BARE_CHECKSUM_RE = re.compile(
@@ -186,6 +189,7 @@ class Downloader:
         destination: str | None,
         verify_checksum: bool,
         correlation_id: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> DownloadResult:
         if self.settings.download_dir is None:
             raise CasdaError("DOWNLOADS_DISABLED", "Local downloads are not configured.")
@@ -234,6 +238,7 @@ class Downloader:
                 artifact,
                 checksum_spec=checksum_spec,
                 correlation_id=correlation_id,
+                progress_callback=progress_callback,
             )
             checksum = ChecksumResult()
             if checksum_spec and hasher:
@@ -299,6 +304,7 @@ class Downloader:
         *,
         checksum_spec: ChecksumSpec | None,
         correlation_id: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[int, bool, Any | None]:
         hasher = _hasher(checksum_spec.algorithm) if checksum_spec else None
         expected_total: int | None = None
@@ -398,6 +404,8 @@ class Downloader:
                                 await output.write(chunk)
                                 if hasher:
                                     hasher.update(chunk)
+                                if progress_callback is not None:
+                                    await progress_callback(offset + received, expected_total)
                     finally:
                         with suppress(OSError):
                             os.close(output_fd)

@@ -76,8 +76,9 @@ class Product(BaseModel):
 
 
 class Observation(BaseModel):
-    id: int
-    sbid: int
+    id: int | None = None
+    sbid: int | None = None
+    obs_id: str | None = None
     observation_start: datetime | None = None
     observation_end: datetime | None = None
     observation_start_mjd: float | None = None
@@ -85,6 +86,8 @@ class Observation(BaseModel):
     telescope: str | None = None
     observation_program: str | None = None
     deposit_state: str | None = None
+    facility_name: str | None = None
+    instrument_name: str | None = None
 
 
 class Project(BaseModel):
@@ -100,6 +103,8 @@ class Pagination(BaseModel):
     returned: int
     has_more: bool
     max_results: int
+    next_cursor: str | None = None
+    offset: int | None = None
 
 
 StagingState = Literal[
