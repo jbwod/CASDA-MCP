@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -356,6 +358,7 @@ class CasdaClient:
         url: str,
         *,
         offset: int,
+        if_range: str | None,
         correlation_id: str,
     ) -> AsyncIterator[httpx.Response]:
         self.validate_archive_url(url)
@@ -364,7 +367,12 @@ class CasdaClient:
             "Accept-Encoding": "identity",
         }
         if offset:
+            if if_range is None:
+                raise ValueError("Ranged downloads require an If-Range validator")
             headers["Range"] = f"bytes={offset}-"
+            headers["If-Range"] = if_range
+        elif if_range is not None:
+            raise ValueError("If-Range cannot be sent without a byte offset")
         timeout = httpx.Timeout(self.settings.download_timeout_seconds)
         started = time.monotonic()
         response: httpx.Response | None = None
@@ -398,31 +406,46 @@ class CasdaClient:
                 },
             )
             if response.status_code >= 400:
-                raise map_http_error(response.status_code, "CASDA download failed.")
+                error = map_http_error(response.status_code, "CASDA download failed.")
+                retry_after = self._retry_after(response)
+                if retry_after is not None:
+                    error.details["retry_after_seconds"] = retry_after
+                raise error
             yield response
         finally:
             await response.aclose()
 
     @staticmethod
-    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    def _retry_after(response: httpx.Response) -> float | None:
         value = response.headers.get("Retry-After")
         if value:
+            is_http_date = False
             try:
-                return min(float(value), 60.0)
+                delay = float(value)
             except ValueError:
+                is_http_date = True
                 try:
-                    return max(
-                        0.0,
-                        min(
-                            (
-                                parsedate_to_datetime(value)
-                                - parsedate_to_datetime(response.headers["Date"])
-                            ).total_seconds(),
-                            60.0,
-                        ),
+                    retry_at = parsedate_to_datetime(value)
+                    date_header = response.headers.get("Date")
+                    reference = (
+                        parsedate_to_datetime(date_header)
+                        if date_header is not None
+                        else datetime.now(timezone.utc)
                     )
-                except (KeyError, TypeError, ValueError):
-                    pass
+                    if retry_at.tzinfo is None or reference.tzinfo is None:
+                        return None
+                    delay = (retry_at - reference).total_seconds()
+                except (OverflowError, TypeError, ValueError):
+                    return None
+            if math.isfinite(delay) and (delay >= 0 or is_http_date):
+                return min(max(delay, 0.0), 60.0)
+        return None
+
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        retry_after = CasdaClient._retry_after(response)
+        if retry_after is not None:
+            return retry_after
         return CasdaClient._backoff(attempt)
 
     @staticmethod

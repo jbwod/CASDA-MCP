@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
@@ -24,6 +26,39 @@ def test_response_byte_limit_is_bounded(value: int) -> None:
 def test_downloads_require_absolute_directory() -> None:
     with pytest.raises(PydanticValidationError, match="absolute"):
         Settings(_env_file=None, enable_downloads=True, download_dir="relative")
+
+
+def test_downloads_reject_filesystem_root() -> None:
+    filesystem_root = Path(Path.cwd().anchor)
+    with pytest.raises(PydanticValidationError, match="not a filesystem root"):
+        Settings(_env_file=None, enable_downloads=True, download_dir=filesystem_root)
+
+
+def test_downloads_reject_symlink_to_filesystem_root(tmp_path: Path) -> None:
+    filesystem_root = Path(tmp_path.anchor)
+    root_link = tmp_path / "root-link"
+    try:
+        root_link.symlink_to(filesystem_root, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    with pytest.raises(PydanticValidationError, match="not a filesystem root"):
+        Settings(_env_file=None, enable_downloads=True, download_dir=root_link)
+
+
+def test_downloads_accept_dedicated_directory_and_symlink(tmp_path: Path) -> None:
+    dedicated = tmp_path / "downloads"
+    dedicated.mkdir()
+    settings = Settings(_env_file=None, enable_downloads=True, download_dir=dedicated)
+    assert settings.download_dir == dedicated
+
+    dedicated_link = tmp_path / "downloads-link"
+    try:
+        dedicated_link.symlink_to(dedicated, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+    linked_settings = Settings(_env_file=None, enable_downloads=True, download_dir=dedicated_link)
+    assert linked_settings.download_dir == dedicated.resolve()
 
 
 def test_staging_requires_complete_credentials() -> None:

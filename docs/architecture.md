@@ -55,8 +55,8 @@ sequenceDiagram
     Note over AI,MCP: No background polling
     AI->>MCP: casda_get_staging_status(request ID)
     MCP->>SODA: one uncached UWS GET
-    SODA-->>MCP: phase, expiry, errors, result URLs
-    MCP->>MCP: match filenames; record only exact ready products
+    SODA-->>MCP: phase, expiry, errors, identified results
+    MCP->>MCP: match unique UWS IDs; atomically record ready products
     MCP-->>AI: overall + per-product state
 ```
 
@@ -65,19 +65,27 @@ sequenceDiagram
 1. Require the download feature flag and exact product ID.
 2. Require a non-expired ready artifact established by a completed UWS status response.
 3. Re-read product metadata and enforce estimated and archive-reported byte limits.
-4. Resolve the caller path under the configured absolute directory; reject traversal and existing
-   files unless replacement was administratively enabled.
-5. Fetch and parse at most 64 KiB from the checksum sidecar when available and requested.
-6. Stream to a unique temporary file. A transient read may retry with `Range` from the confirmed
-   temporary size; an ignored Range response restarts the same call safely.
-7. Verify response Content-Length, final size, and checksum.
-8. Atomically replace the target, confirm it is a file, then return its path.
-9. On any failure, remove the incomplete temporary file.
+4. Canonicalise and identity-check the configured absolute, non-root, owner-controlled directory;
+   reject non-sticky writable ancestors, traversal, case aliases of reserved internal names,
+   symlinks, and existing files unless regular-file replacement was administratively enabled.
+5. Atomically reserve a hash of the target in the private `.casda-mcp/locks` namespace and recheck
+   the target before any checksum or file request.
+6. Fetch and parse at most 64 KiB from the checksum sidecar when available and requested.
+7. Stream identity-encoded raw bytes through a descriptor bound to the original inode of a unique same-directory
+   temporary file. Resume with `Range` and `If-Range` only after a strong ETag or an RFC-strong
+   Last-Modified was observed; otherwise truncate and restart from byte zero. A full `200` after a
+   ranged request also replaces all partial bytes.
+8. Verify strict Content-Range arithmetic, response Content-Length, final size, and checksum.
+9. Publish with an atomic no-clobber link, or `os.replace` only when regular-file replacement was
+   explicitly enabled; confirm the result is a regular file.
+10. Sync and publish the verified inode, then remove its temporary name and reservation. A process
+    crash can leave a safe stale hashed reservation requiring operator inspection.
 
 ## Retry and consistency boundaries
 
 Safe TAP reads, Datalink reads, UWS status reads, checksum reads, and file GETs may retry transient
-network, 429, or 5xx failures. Backoff is exponential with jitter and honors bounded `Retry-After`.
+network, 408, 425, 429, or 5xx failures. Backoff is exponential with jitter and honors bounded
+`Retry-After`.
 SODA job creation and phase start are not retried because a lost response could conceal a successful
 state change. Caller and generated idempotency keys prevent known duplicate submissions at the
 service boundary but cannot make an ambiguous upstream request response safe to replay.

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import gzip
+import math
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import httpx
 import pytest
@@ -142,10 +145,49 @@ async def test_client_maps_authentication_failure(client: CasdaClient) -> None:
         await client.aclose()
 
 
+@pytest.mark.parametrize("status", [408, 425])
+@respx.mock
+async def test_client_maps_retryable_request_statuses(
+    client: CasdaClient,
+    status: int,
+) -> None:
+    respx.get("https://data.csiro.au/transient").mock(return_value=httpx.Response(status))
+    try:
+        with pytest.raises(CasdaError) as error:
+            await client.request(
+                "GET",
+                "https://data.csiro.au/transient",
+                safe_to_retry=True,
+                correlation_id="test",
+            )
+        assert error.value.code == "ARCHIVE_UNAVAILABLE"
+        assert error.value.retryable is True
+    finally:
+        await client.aclose()
+
+
 def test_client_rejects_caller_controlled_host_before_network(client: CasdaClient) -> None:
     with pytest.raises(CasdaError) as error:
         client.validate_archive_url("https://example.com/not-casda")
     assert error.value.code == "UNSAFE_ARCHIVE_URL"
+
+
+@pytest.mark.parametrize("value", ["NaN", "-1", "-Infinity", "not-a-delay"])
+def test_client_ignores_invalid_retry_after(value: str) -> None:
+    response = httpx.Response(429, headers={"Retry-After": value})
+    assert CasdaClient._retry_after(response) is None
+    assert math.isfinite(CasdaClient._retry_delay(response, 1))
+
+
+def test_client_parses_retry_after_date_without_response_date() -> None:
+    retry_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+    response = httpx.Response(
+        429,
+        headers={"Retry-After": format_datetime(retry_at, usegmt=True)},
+    )
+    delay = CasdaClient._retry_after(response)
+    assert delay is not None
+    assert 0 <= delay <= 30
 
 
 async def test_client_rejects_unexpected_datalink_path_before_network(
@@ -310,6 +352,7 @@ async def test_binary_download_requests_identity_encoding() -> None:
         async with client.stream_download(
             "https://data.csiro.au/download/cube-1.fits",
             offset=8,
+            if_range='"version-one"',
             correlation_id="test",
         ):
             pass
@@ -319,3 +362,4 @@ async def test_binary_download_requests_identity_encoding() -> None:
     assert headers["Accept"] == "application/octet-stream"
     assert headers["Accept-Encoding"] == "identity"
     assert headers["Range"] == "bytes=8-"
+    assert headers["If-Range"] == '"version-one"'

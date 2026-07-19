@@ -139,7 +139,7 @@ See [SIA 2.0][sia-2], [Simple Cone Search 1.03][scs-1-03], and [SSA 1.1][ssa-1-1
 | Integrated spectrum | `casda_create_spectrum` | **Planned** |
 | Job results | `casda_get_data_job_results` | **Partial**: results are consumed within staging status rather than exposed generally |
 | Abort/delete data job | `casda_abort_data_job`; `casda_delete_data_job` | **Planned** |
-| Download one result | `casda_download_product` | **Partial**: guarded stream/checksum path exists; validator-aware resume and destination-race hardening remain |
+| Download one result | `casda_download_product` | **Partial**: hardened, bounded, validator-aware single-result download exists; authenticated live conformance remains |
 | Download all selected results | `casda_download_job_results` | **Planned** |
 | Verify a local artifact | Integrated verification and optional `casda_verify_file` | **Partial** |
 | Reproducible selection | `casda_create_manifest`; manifest resource | **Partial**: typed deterministic manifest exists; collection DOI/citation metadata is not yet included |

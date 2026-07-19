@@ -53,6 +53,13 @@ def map_http_error(status: int, message: str = "CASDA request failed.") -> Casda
         return CasdaError(
             "NOT_FOUND", "The requested CASDA resource was not found.", http_status=404
         )
+    if status in {408, 425}:
+        return CasdaError(
+            "ARCHIVE_UNAVAILABLE",
+            "CASDA asked the client to retry the request later.",
+            True,
+            http_status=status,
+        )
     if status == 429:
         return CasdaError("RATE_LIMITED", "CASDA rate-limited the request.", True, http_status=429)
     if 500 <= status <= 599:

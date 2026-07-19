@@ -132,7 +132,7 @@ configuration fails fast.
 | `CASDA_PASSWORD` | unset | OPAL password. Stored as a secret value and never logged. |
 | `CASDA_ENABLE_STAGING` | `false` | Enables archive-side request creation only when OPAL credentials are complete. |
 | `CASDA_ENABLE_DOWNLOADS` | `false` | Enables local file writes. |
-| `CASDA_DOWNLOAD_DIR` | unset | Required absolute containment directory when downloads are enabled. |
+| `CASDA_DOWNLOAD_DIR` | unset | Required absolute, dedicated containment directory when downloads are enabled; filesystem roots are rejected, including through symlinks. |
 | `CASDA_ALLOW_OVERWRITE` | `false` | Allows atomic replacement of an existing destination. Keep false normally. |
 | `CASDA_MAX_RESULTS` | `100` | Maximum bounded search window, up to a hard limit of 1000. |
 | `CASDA_MAX_CONE_RADIUS_DEG` | `5` | Maximum cone radius in degrees. |
@@ -174,10 +174,17 @@ export CASDA_MAX_DOWNLOAD_BYTES=10737418240
 uv run casda-mcp
 ```
 
-The directory must be absolute. Caller destinations are resolved and checked for containment,
-including absolute paths and `..` traversal. Parent directories are created only inside this root.
-Files are written to unique temporary paths and atomically moved after length and optional checksum
-verification. Incomplete files are removed after failure.
+The directory must be absolute, dedicated to CASDA downloads, and cannot resolve to a filesystem
+root. On POSIX it must be owned by the server account and not group- or world-writable; equivalent
+ACL isolation is an operator responsibility on Windows. Its canonical location and inode identity
+are recorded once writes begin and rechecked before path mutations; non-sticky writable ancestors
+are rejected on POSIX. Caller destinations are checked for containment, symlink traversal,
+reserved internal names, and portable filename safety. Each target is reserved in a private,
+hash-named `.casda-mcp/locks` directory before any archive request. Files are streamed as
+identity-encoded raw bytes through a descriptor bound to the original temporary inode, then published atomically
+after length and optional checksum verification. With overwrite disabled, the destination filesystem
+must support same-directory hard links for atomic no-clobber publication. Incomplete files and normal
+reservations are removed after failure.
 
 ## Tools
 
@@ -459,8 +466,11 @@ secrets only when explicitly enabling downloads or staging.
 - UWS reports an overall job phase. A product is marked individually ready only when a completed job
   returns its unique product result identifier. A globally unambiguous filename fallback is retained
   for historical jobs; ambiguous results remain `UNKNOWN`.
-- Resumption is attempted within one download call after a transient read failure. Final failure
-  removes the temporary file, so resumption does not persist across separate calls.
+- Resumption is attempted within one download call only when CASDA supplies a strong ETag or an
+  RFC-strong Last-Modified validator; otherwise a retry restarts from byte zero. Final failure removes the
+  temporary file, so resumption does not persist across separate calls. An abrupt process or host
+  termination can leave a hashed lock in `.casda-mcp/locks` that an operator must inspect and remove
+  before retrying that exact destination.
 - Source-name resolution and row-level catalogue science queries are outside this server. No generic
   unrestricted ADQL tool is exposed.
 - Beam identifiers may be retained in filenames or target metadata, but CASDA ObsCore does not expose

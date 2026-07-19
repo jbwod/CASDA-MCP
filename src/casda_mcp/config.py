@@ -75,6 +75,14 @@ class Settings(BaseSettings):
                 raise ValueError("CASDA_DOWNLOAD_DIR is required when downloads are enabled")
             if not self.download_dir.is_absolute():
                 raise ValueError("CASDA_DOWNLOAD_DIR must be an absolute path")
+            resolved_download_dir = self.download_dir.resolve(strict=False)
+            if resolved_download_dir.parent == resolved_download_dir:
+                raise ValueError(
+                    "CASDA_DOWNLOAD_DIR must be a dedicated directory, not a filesystem root"
+                )
+            # Pin the configured lexical path to its canonical target so a
+            # symlink cannot later be retargeted to widen the write boundary.
+            self.download_dir = resolved_download_dir
         if self.enable_staging and not self.has_credentials:
             raise ValueError("staging requires CASDA_USERNAME and CASDA_PASSWORD")
         if (self.username is None) != (self.password is None):
