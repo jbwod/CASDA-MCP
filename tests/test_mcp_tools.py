@@ -44,9 +44,7 @@ async def test_mcp_stage_and_download_return_guard_errors_by_default(mcp_server)
 
 async def test_mcp_status_does_not_accept_unknown_or_arbitrary_request(mcp_server) -> None:
     with pytest.raises(ToolError) as exc_info:
-        await mcp_server.call_tool(
-            "casda_get_staging_status", {"request_id": "unknown-request"}
-        )
+        await mcp_server.call_tool("casda_get_staging_status", {"request_id": "unknown-request"})
     assert _error_payload(exc_info.value)["code"] == "STAGING_REQUEST_NOT_FOUND"
 
 

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from casda_mcp.adql import validate_adql
 from casda_mcp.cache import TTLCache
 from casda_mcp.client import CasdaClient
 from casda_mcp.config import Settings
@@ -17,6 +18,7 @@ from casda_mcp.cursor import decode_cursor, encode_cursor, query_hash
 from casda_mcp.downloads import Downloader
 from casda_mcp.errors import CasdaError, ValidationError
 from casda_mcp.models import (
+    BuildAdqlResponse,
     ColumnInfo,
     CreateManifestResponse,
     DescribeTableResponse,
@@ -41,7 +43,9 @@ from casda_mcp.models import (
     StagingRequest,
     StagingStatusResponse,
     TableInfo,
+    TapQueryResponse,
     UwsResult,
+    ValidateAdqlResponse,
 )
 from casda_mcp.observability import Metrics
 from casda_mcp.parsers import observation_from_row, product_from_row, project_from_row
@@ -431,6 +435,81 @@ class CasdaService:
         if lowered in {"0", "false"}:
             return False
         return None
+
+    def build_adql(self, criteria: SearchCriteria) -> BuildAdqlResponse:
+        """Build the allowlisted search ADQL without contacting CASDA."""
+
+        requested_at = utc_now()
+        query, max_records = self.queries.build_search(criteria)
+        parameters = criteria.as_parameters()
+        return BuildAdqlResponse(
+            query=query,
+            max_records=max_records,
+            parameters=parameters,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint="local://adql/build",
+                parameters=parameters,
+                result_count=1,
+                correlation_id=str(uuid.uuid4()),
+            ),
+        )
+
+    def validate_adql_query(self, query: str) -> ValidateAdqlResponse:
+        """Validate ADQL against the SELECT-only policy without contacting CASDA."""
+
+        requested_at = utc_now()
+        validated = validate_adql(
+            query,
+            max_length=self.settings.max_adql_length,
+            max_rows=self.settings.max_tap_rows,
+        )
+        return ValidateAdqlResponse(
+            valid=True,
+            query=validated.query,
+            max_rows=validated.max_rows,
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint="local://adql/validate",
+                parameters={"query": validated.query, "max_rows": validated.max_rows},
+                result_count=1,
+                correlation_id=str(uuid.uuid4()),
+            ),
+        )
+
+    async def tap_query(self, query: str) -> TapQueryResponse:
+        """Run one validated sync TAP query when advanced ADQL is enabled."""
+
+        requested_at = utc_now()
+        correlation_id = str(uuid.uuid4())
+        if not self.settings.enable_advanced_adql:
+            raise CasdaError(
+                "ADVANCED_ADQL_DISABLED",
+                "Advanced ADQL is disabled by server configuration.",
+            )
+        validated = validate_adql(
+            query,
+            max_length=self.settings.max_adql_length,
+            max_rows=self.settings.max_tap_rows,
+        )
+        rows = await self.client.tap_query(
+            validated.query,
+            max_records=validated.max_rows,
+            correlation_id=correlation_id,
+        )
+        self.note_archive_availability(True, detail="TAP sync query succeeded")
+        return TapQueryResponse(
+            rows=rows,
+            max_rows=validated.max_rows,
+            returned=len(rows),
+            provenance=make_provenance(
+                request_timestamp=requested_at,
+                endpoint=self.settings.tap_url,
+                parameters={"query": validated.query, "max_rows": validated.max_rows},
+                result_count=len(rows),
+                correlation_id=correlation_id,
+            ),
+        )
 
     async def search_products(self, criteria: SearchCriteria) -> SearchProductsResponse:
         requested_at = utc_now()

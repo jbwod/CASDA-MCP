@@ -19,6 +19,7 @@ from starlette.routing import Route
 from casda_mcp import __version__
 from casda_mcp.errors import CasdaError
 from casda_mcp.models import (
+    BuildAdqlResponse,
     CreateManifestResponse,
     DescribeTableResponse,
     DownloadProductResponse,
@@ -32,6 +33,8 @@ from casda_mcp.models import (
     SearchProductsResponse,
     StageProductsResponse,
     StagingStatusResponse,
+    TapQueryResponse,
+    ValidateAdqlResponse,
 )
 from casda_mcp.query import SearchCriteria
 from casda_mcp.service import CasdaService
@@ -57,6 +60,9 @@ ProductSort = Literal[
 
 _READ_ONLY = ToolAnnotations(
     readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
+_LOCAL_READ_ONLY = ToolAnnotations(
+    readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False
 )
 _STATE_CHANGING = ToolAnnotations(
     readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
@@ -368,6 +374,150 @@ def create_mcp_server(
         """List TAP_SCHEMA foreign keys that originate from the requested table."""
         try:
             return await service.list_foreign_keys(schema_name, table_name)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Build CASDA ADQL", annotations=_LOCAL_READ_ONLY)
+    async def casda_build_adql(
+        source_name: Annotated[
+            str | None,
+            Field(description="Exact CASDA target name; this tool does not resolve names."),
+        ] = None,
+        ra_deg: Annotated[
+            float | None, Field(description="ICRS right ascension in degrees, in [0, 360).")
+        ] = None,
+        dec_deg: Annotated[
+            float | None, Field(description="ICRS declination in degrees, in [-90, 90].")
+        ] = None,
+        radius_deg: Annotated[
+            float | None,
+            Field(description="Cone radius in degrees; bounded by server configuration."),
+        ] = None,
+        project_code: Annotated[
+            str | None, Field(description="Exact OPAL/CASDA project code, such as AS102.")
+        ] = None,
+        scheduling_block_id: Annotated[
+            int | None, Field(description="Positive ASKAP scheduling block identifier.")
+        ] = None,
+        observation_start: Annotated[
+            str | None, Field(description="Earliest overlapping observation date/time in ISO 8601.")
+        ] = None,
+        observation_end: Annotated[
+            str | None, Field(description="Latest overlapping observation date/time in ISO 8601.")
+        ] = None,
+        frequency_min_hz: Annotated[
+            float | None, Field(description="Lower overlapping spectral frequency in hertz.")
+        ] = None,
+        frequency_max_hz: Annotated[
+            float | None, Field(description="Upper overlapping spectral frequency in hertz.")
+        ] = None,
+        product_types: Annotated[
+            list[ProductType] | None,
+            Field(
+                description=(
+                    "Allowlisted types: image, cube, visibility, spectrum, catalogue, "
+                    "weight, moment_map, cubelet, evaluation, scan."
+                ),
+                max_length=10,
+            ),
+        ] = None,
+        collection: Annotated[
+            str | None, Field(description="Exact ObsCore collection name.")
+        ] = None,
+        facility_name: Annotated[
+            str | None, Field(description="Exact ObsCore facility_name filter.")
+        ] = None,
+        instrument_name: Annotated[
+            str | None, Field(description="Exact ObsCore instrument_name filter.")
+        ] = None,
+        released_only: Annotated[
+            bool,
+            Field(description="When true, require a non-null obs_release_date in the ADQL."),
+        ] = True,
+        sort_by: Annotated[
+            ProductSort,
+            Field(
+                description=(
+                    "Allowlisted sort field: product_id, filename, file_size, "
+                    "observation_start, release_date, distance."
+                )
+            ),
+        ] = "product_id",
+        sort_order: Annotated[
+            Literal["asc", "desc"], Field(description="Sort direction: asc or desc.")
+        ] = "asc",
+        page: Annotated[
+            int,
+            Field(description="One-based page within the configured bounded result window.", ge=1),
+        ] = 1,
+        page_size: Annotated[
+            int,
+            Field(
+                description="Number of results to return; bounded by server configuration.", ge=1
+            ),
+        ] = 25,
+    ) -> BuildAdqlResponse:
+        """Build the allowlisted ObsCore search ADQL string without contacting CASDA."""
+        try:
+            return service.build_adql(
+                SearchCriteria(
+                    source_name=source_name,
+                    ra_deg=ra_deg,
+                    dec_deg=dec_deg,
+                    radius_deg=radius_deg,
+                    project_code=project_code,
+                    scheduling_block_id=scheduling_block_id,
+                    observation_start=observation_start,
+                    observation_end=observation_end,
+                    frequency_min_hz=frequency_min_hz,
+                    frequency_max_hz=frequency_max_hz,
+                    product_types=list(product_types) if product_types is not None else None,
+                    collection=collection,
+                    facility_name=facility_name,
+                    instrument_name=instrument_name,
+                    released_only=released_only,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    page=page,
+                    page_size=page_size,
+                )
+            )
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Validate CASDA ADQL", annotations=_LOCAL_READ_ONLY)
+    async def casda_validate_adql(
+        query: Annotated[
+            str,
+            Field(description="Candidate ADQL SELECT statement to validate locally."),
+        ],
+    ) -> ValidateAdqlResponse:
+        """Validate ADQL against the SELECT-only policy without contacting CASDA."""
+        try:
+            return service.validate_adql_query(query)
+        except CasdaError as exc:
+            _raise_tool_error(exc)
+        except Exception as exc:
+            _raise_internal_error(exc)
+
+    @mcp.tool(title="Run CASDA TAP query", annotations=_READ_ONLY)
+    async def casda_tap_query(
+        query: Annotated[
+            str,
+            Field(description="SELECT-only ADQL validated and executed via sync TAP."),
+        ],
+    ) -> TapQueryResponse:
+        """Execute one validated, bounded sync TAP query.
+
+        Requires CASDA_ENABLE_ADVANCED_ADQL. Rejects mutations, comments, multi-statement
+        input, and non-allowlisted table references.
+        """
+        try:
+            return await service.tap_query(query)
         except CasdaError as exc:
             _raise_tool_error(exc)
         except Exception as exc:

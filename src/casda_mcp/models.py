@@ -339,3 +339,27 @@ class ListForeignKeysResponse(BaseModel):
     foreign_keys: list[ForeignKeyInfo] = Field(default_factory=list)
     provenance: Provenance | None = None
     error: ErrorInfo | None = None
+
+
+class BuildAdqlResponse(BaseModel):
+    query: str
+    max_records: int
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class ValidateAdqlResponse(BaseModel):
+    valid: bool = True
+    query: str
+    max_rows: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
+
+
+class TapQueryResponse(BaseModel):
+    rows: list[dict[str, str | None]] = Field(default_factory=list)
+    max_rows: int
+    returned: int
+    provenance: Provenance | None = None
+    error: ErrorInfo | None = None
