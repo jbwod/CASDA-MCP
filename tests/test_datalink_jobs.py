@@ -211,9 +211,9 @@ async def test_stage_pawsey_job_includes_human_gate_warnings(tmp_path) -> None:
             },
         )
     )
-    respx.post(
-        "https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1/phase"
-    ).mock(return_value=httpx.Response(200, content=b"<ok/>"))
+    respx.post("https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1/phase").mock(
+        return_value=httpx.Response(200, content=b"<ok/>")
+    )
     respx.get("https://ingest.pawsey.org.au/casda_data_access/data/async/job-paw-1").mock(
         return_value=httpx.Response(
             200,

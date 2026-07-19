@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 from casda_mcp.config import Settings
-from casda_mcp.service import CasdaService
 from casda_mcp.server import create_mcp_server
+from casda_mcp.service import CasdaService
 
 
 async def test_get_dap_navigation_links_and_privileged_refusal() -> None:

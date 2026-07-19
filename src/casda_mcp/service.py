@@ -1490,9 +1490,7 @@ class CasdaService:
             except CasdaError as exc:
                 datacite_error = exc
                 try:
-                    csl = await self.client.fetch_doi_csl(
-                        normalized, correlation_id=correlation_id
-                    )
+                    csl = await self.client.fetch_doi_csl(normalized, correlation_id=correlation_id)
                     record = doi_record_from_csl(csl, doi=normalized)
                     endpoint = f"{self.settings.doi_resolve_url}/{normalized}"
                 except CasdaError as csl_exc:
@@ -1521,10 +1519,7 @@ class CasdaService:
             except CasdaError as exc:
                 if exc.code != "COLLECTION_NOT_FOUND":
                     raise
-            navigation = (
-                "https://data.csiro.au/search?"
-                f"q={quote(collection_name)}"
-            )
+            navigation = f"https://data.csiro.au/search?q={quote(collection_name)}"
             return ResolveCollectionDoiResponse(
                 found=False,
                 collection=collection_name,
@@ -1960,10 +1955,7 @@ class CasdaService:
 
         existing = self.state.get_staging_by_idempotency(key)
         if existing:
-            if (
-                set(existing.product_ids) != set(normalized)
-                or existing.job_kind != job_kind
-            ):
+            if set(existing.product_ids) != set(normalized) or existing.job_kind != job_kind:
                 raise CasdaError(
                     "IDEMPOTENCY_CONFLICT",
                     "The idempotency key was already used with different product identifiers.",
